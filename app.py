@@ -651,7 +651,7 @@ def apply_historical_snapshot(data,user_id):
 
 def admin_panel(user):
     st.title("Административен панел")
-    tabs=st.tabs(["Табло","Апартаменти","Регистрации","Роли","Плащания","Банер","Исторически статус","Експорт","Технически проблеми","Обяви","Документи","Гласувания","Паркоместа"])
+    tabs=st.tabs(["Табло","Апартаменти","Регистрации","Роли","Плащания","Исторически статус","Експорт","Технически проблеми","Обяви","Документи","Гласувания","Паркоместа"])
     with tabs[0]:
         s=fetch_one("SELECT (SELECT COUNT(*) FROM apartments WHERE active) a,(SELECT COUNT(*) FROM users WHERE account_status='pending') p,(SELECT COALESCE(SUM(amount),0) FROM payments WHERE status='confirmed') i,(SELECT COALESCE(SUM(amount),0) FROM expenses) e")
         c1,c2,c3,c4=st.columns(4); c1.metric("Обекти",s["a"]); c2.metric("Чакащи",s["p"]); c3.metric("Постъпления",fmt(s["i"])); c4.metric("Разходи",fmt(s["e"]))
