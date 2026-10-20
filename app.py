@@ -55,7 +55,22 @@ def kind_bg(v): return {"entrance":"Такса вход","fro":"ФРО","old_deb
 YEARS=list(range(2024,2041))
 
 def login_page():
-    st.title("🏢 Building.Manager")
+
+    banner = Path(
+        "assets/Twilight Luxury Residences with Crescent Moon.jpg"
+    )
+
+    if banner.exists():
+        st.image(
+            str(banner),
+            use_container_width=True
+        )
+
+    st.markdown("## Управление на етажна собственост")
+
+    a, b = st.tabs(
+        ["Вход", "Регистрация за справка"]
+    )
     a,b=st.tabs(["Вход","Регистрация за справка"])
     with a:
         with st.form("login"):
@@ -207,16 +222,7 @@ def neighbor_page(user):
     if not user.get("apartment_id"): st.info("Профилът не е свързан с обект."); return
     default_year=YEARS.index(date.today().year) if date.today().year in YEARS else 0
     year=st.selectbox("Година",YEARS,index=default_year); apartment_ledger(user["apartment_id"],year,False)
-    from pathlib import Path
-
-    banner = Path("assets/Twilight Luxury Residences with Crescent Moon.jpg")
     
-    if banner.exists():
-        st.image(
-            str(banner),
-            use_container_width=True
-        )
-
 def neighbor_archive(user):
     st.title("Архив")
     rows=fetch_all("SELECT payment_date AS дата,payment_number AS номер,amount AS сума,payment_method AS метод,status AS статус,note AS бележка FROM payments WHERE apartment_id=%s AND status='confirmed' ORDER BY payment_date DESC",(user["apartment_id"],)) if user.get("apartment_id") else []
@@ -315,15 +321,6 @@ def apply_historical_snapshot(data,user_id):
 
 def admin_panel(user):
     st.title("Административен панел")
-    from pathlib import Path
-
-    banner = Path("assets/Twilight Luxury Residences with Crescent Moon.jpg")
-    
-    if banner.exists():
-        st.image(
-            str(banner),
-            use_container_width=True
-        )
     tabs=st.tabs(["Табло","Апартаменти","Регистрации","Роли","Плащания","Банер","Исторически статус","Експорт"])
     with tabs[0]:
         s=fetch_one("SELECT (SELECT COUNT(*) FROM apartments WHERE active) a,(SELECT COUNT(*) FROM users WHERE account_status='pending') p,(SELECT COALESCE(SUM(amount),0) FROM payments WHERE status='confirmed') i,(SELECT COALESCE(SUM(amount),0) FROM expenses) e")
