@@ -6,7 +6,6 @@ from urllib.parse import quote
 
 import pandas as pd
 from PIL import Image
-from pathlib import Path
 from openpyxl import load_workbook
 import streamlit as st
 
@@ -43,6 +42,16 @@ try:
         id BIGSERIAL PRIMARY KEY, cash_amount NUMERIC(14,2) NOT NULL, bank_amount NUMERIC(14,2) NOT NULL,
         applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), applied_by BIGINT REFERENCES users(id), note TEXT)""")
     execute("ALTER TABLE obligations ADD COLUMN IF NOT EXISTS source_currency VARCHAR(3) NOT NULL DEFAULT 'EUR'")
+    execute("ALTER TABLE obligations ADD COLUMN IF NOT EXISTS custom_status VARCHAR(30)")
+    execute("ALTER TABLE obligations ADD COLUMN IF NOT EXISTS original_amount NUMERIC(12,2)")
+    execute("ALTER TABLE obligations ADD COLUMN IF NOT EXISTS adjustment_reason TEXT")
+    execute("ALTER TABLE obligations ADD COLUMN IF NOT EXISTS adjusted_by BIGINT REFERENCES users(id)")
+    execute("ALTER TABLE obligations ADD COLUMN IF NOT EXISTS adjusted_at TIMESTAMPTZ")
+    execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS source_currency VARCHAR(3) NOT NULL DEFAULT 'EUR'")
+    execute("""CREATE TABLE IF NOT EXISTS obligation_adjustments (
+        id BIGSERIAL PRIMARY KEY, obligation_id BIGINT NOT NULL REFERENCES obligations(id) ON DELETE CASCADE,
+        old_amount NUMERIC(12,2) NOT NULL, new_amount NUMERIC(12,2) NOT NULL, action VARCHAR(30) NOT NULL,
+        reason TEXT NOT NULL, changed_by BIGINT REFERENCES users(id), changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
 except Exception as exc:
     st.error(str(exc)); st.stop()
 
@@ -55,17 +64,13 @@ def kind_bg(v): return {"entrance":"Такса вход","fro":"ФРО","old_deb
 YEARS=list(range(2024,2041))
 
 def login_page():
-
-    banner = Path(
-        "assets/Twilight Luxury Residences with Crescent Moon.jpg"
-    )
-
-    if banner.exists():
-        st.image(
-            str(banner),
-            use_container_width=True
-        )
-
+    banner_candidates = [
+        Path("assets/Twilight Luxury Residences with Crescent Moon.jpg"),
+        Path("Twilight Luxury Residences with Crescent Moon.jpg"),
+    ]
+    banner = next((path for path in banner_candidates if path.exists()), None)
+    if banner:
+        st.image(str(banner), use_container_width=True)
     st.markdown("## Управление на етажна собственост")
     a,b=st.tabs(["Вход","Регистрация за справка"])
     with a:
@@ -101,209 +106,81 @@ def apartment_ledger(apartment_id,year,editable=False,key="ledger"):
     rows=payment_rows(apartment_id,year); data=[]
     for r in rows:
         paid=Decimal(r["paid"]); left=max(Decimal("0"),Decimal(r["amount"])-paid)
-        data.append({"Плати":False,"Вид":kind_bg(r["fee_type"]),"Месец":MONTHS.get(r["month"],"Еднократно"),"Година":r["year"],"Валута":r.get("source_currency") or ("BGN" if int(r["year"])<2026 else "EUR"),"Начислено":float(r["amount"]),"Платено":float(paid),"Остатък":float(left),"Статус":"🟢 Платено" if left<=0 else "🟠 Частично" if paid>0 else "🔴 Неплатено","_id":r["id"]})
+        custom_status = str(r.get("custom_status") or "")
+        if custom_status == "force_majeure": display_status = "🔵 Друг / форсмажор"
+        elif left <= 0: display_status = "🟢 Платено"
+        elif paid > 0: display_status = "🟠 Частично"
+        else: display_status = "🔴 Неплатено"
+        data.append({"Плати":False,"Вид":kind_bg(r["fee_type"]),"Месец":MONTHS.get(r["month"],"Еднократно"),"Година":r["year"],"Валута":r.get("source_currency") or ("BGN" if int(r["year"])<2026 else "EUR"),"Начислено":float(r["amount"]),"Платено":float(paid),"Остатък":float(left),"Статус":display_status,"_id":r["id"]})
     df=pd.DataFrame(data)
     if df.empty: st.info("Няма задължения."); return [],Decimal("0")
     base=df.drop(columns=["_id"])
     if editable:
-        view=st.data_editor(base,use_container_width=True,hide_index=True,disabled=["Вид","Месец","Година","Валута","Начислено","Платено","Остатък","Статус"],column_config={"Плати":st.column_config.CheckboxColumn("Плати"),"Начислено":st.column_config.NumberColumn(format="%.2f €"),"Платено":st.column_config.NumberColumn(format="%.2f €"),"Остатък":st.column_config.NumberColumn(format="%.2f €")},key=key)
+        view=st.data_editor(base,use_container_width=True,hide_index=True,disabled=["Вид","Месец","Година","Валута","Начислено","Платено","Остатък","Статус"],column_config={"Плати":st.column_config.CheckboxColumn("Плати"),"Начислено":st.column_config.NumberColumn(format="%.2f"),"Платено":st.column_config.NumberColumn(format="%.2f"),"Остатък":st.column_config.NumberColumn(format="%.2f")},key=key)
     else:
         view=base.drop(columns=["Плати"]); st.dataframe(view,use_container_width=True,hide_index=True); return [],sum(Decimal(str(x)) for x in df["Остатък"])
     selected=[]
     for i,row in view.iterrows():
         if bool(row["Плати"]) and Decimal(str(row["Остатък"]))>0: selected.append({"id":int(df.iloc[i]["_id"]),"amount":Decimal(str(row["Остатък"])),"label":f"{row['Вид']} {row['Месец']} {row['Година']}"})
     return selected,sum((x["amount"] for x in selected),Decimal("0"))
+
+
+def selected_currency_for_year(year):
+    return "BGN" if int(year) < 2026 else "EUR"
+
+
+def record_payment_with_currency(apartment_id, selected, method, user_id, note, currency, status="confirmed"):
+    number=create_payment(apartment_id,selected,method,user_id,status,note)
+    execute("UPDATE payments SET source_currency=%s WHERE payment_number=%s",(currency,number))
+    return number
+
+
 def force_majeure_adjustment(user, apartment_id, year, rows):
-    """
-    Административна корекция на конкретно задължение.
-    Достъпна е само за manager.
-    """
-
-    if user["role"] != "manager":
-        return
-
-    st.divider()
-    st.subheader("⚙️ Друг статус / форсмажорна корекция")
-
-    st.caption(
-        "Използвай тази секция само при изключение: освобождаване от такса, "
-        "индивидуална договорка, допълнително начисление или друга корекция."
-    )
-
-    available_rows = []
-
+    if user.get("role") != "manager": return
+    st.divider(); st.subheader("⚙️ Друг статус / форсмажорна корекция")
+    st.caption("Променя само избраното задължение. Не създава приход или разход и не променя касовото салдо.")
+    row_map={}
     for row in rows:
-        paid = Decimal(row["paid"])
-        amount = Decimal(row["amount"])
-        remaining = max(Decimal("0"), amount - paid)
-
-        label = (
-            f"{kind_bg(row['fee_type'])} · "
-            f"{MONTHS.get(row['month'], 'Еднократно')} · "
-            f"{row['year']} · "
-            f"Начислено {amount:.2f} · "
-            f"Платено {paid:.2f} · "
-            f"Остатък {remaining:.2f}"
-        )
-
-        available_rows.append(
-            {
-                "label": label,
-                "row": row,
-                "paid": paid,
-                "amount": amount,
-                "remaining": remaining,
-            }
-        )
-
-    if not available_rows:
-        st.info("Няма задължения за корекция.")
+        paid=Decimal(row["paid"]); amount=Decimal(row["amount"]); remaining=max(Decimal("0"),amount-paid)
+        state="ПЛАТЕНО" if remaining==0 else "ЧАСТИЧНО" if paid>0 else "НЕПЛАТЕНО"
+        adjusted=" · ДРУГ" if row.get("custom_status")=="force_majeure" else ""
+        label=f"{state}{adjusted} · {kind_bg(row['fee_type'])} · {MONTHS.get(row['month'],'Еднократно')} {row['year']} · {amount:.2f} {row.get('source_currency') or 'EUR'}"
+        row_map[label]={"row":row,"paid":paid,"amount":amount}
+    if not row_map: st.info("Няма задължения за корекция."); return
+    selected_label=st.selectbox("Избери задължение",list(row_map),key=f"fm_obligation_{apartment_id}_{year}")
+    item=row_map[selected_label]; row=item["row"]; paid=item["paid"]; current=item["amount"]
+    is_adjusted=row.get("custom_status")=="force_majeure"
+    actions=["Без промяна","Друг / форсмажор"]
+    if is_adjusted and row.get("original_amount") is not None: actions.append("Върни първоначалната сума")
+    action=st.selectbox("Действие",actions,key=f"fm_action_{row['id']}")
+    if action=="Без промяна": return
+    if action=="Върни първоначалната сума":
+        original=Decimal(row["original_amount"])
+        if original < paid:
+            st.error(f"Първоначалната сума {original:.2f} е под вече платеното {paid:.2f}. Възстановяването е блокирано."); return
+        reason=st.text_input("Причина за възстановяване",key=f"restore_reason_{row['id']}")
+        confirm=st.checkbox("Потвърждавам възстановяването",key=f"restore_confirm_{row['id']}")
+        if st.button("Върни първоначалната сума",disabled=not(reason.strip() and confirm),key=f"restore_btn_{row['id']}"):
+            execute("INSERT INTO obligation_adjustments(obligation_id,old_amount,new_amount,action,reason,changed_by) VALUES(%s,%s,%s,'restore',%s,%s)",(row["id"],current,original,reason.strip(),user["id"]))
+            execute("UPDATE obligations SET amount=%s,custom_status=NULL,adjustment_reason=NULL,adjusted_by=%s,adjusted_at=NOW() WHERE id=%s",(original,user["id"],row["id"]))
+            audit(user["id"],"restore_obligation_amount","obligation",row["id"],f"{current}->{original}; {reason}"); st.success("Първоначалната сума е възстановена."); rerun()
         return
+    st.warning("Използвай само при решение, освобождаване, индивидуална договорка или допълнително начисление.")
+    with st.form(f"fm_form_{row['id']}"):
+        new_amount=st.number_input("Нова начислена сума",min_value=float(paid),max_value=100000.0,value=float(current),step=0.01,format="%.2f")
+        reason=st.text_area("Задължително основание",placeholder="Решение, форсмажор, освобождаване или допълнително начисление")
+        confirm=st.checkbox("Потвърждавам корекцията")
+        save=st.form_submit_button("Запази корекцията",use_container_width=True)
+    if save:
+        corrected=Decimal(str(new_amount)).quantize(Decimal("0.01"))
+        if not reason.strip(): st.error("Въведи основание."); return
+        if not confirm: st.error("Потвърди корекцията."); return
+        original=Decimal(row["original_amount"]) if row.get("original_amount") is not None else current
+        execute("INSERT INTO obligation_adjustments(obligation_id,old_amount,new_amount,action,reason,changed_by) VALUES(%s,%s,%s,'force_majeure',%s,%s)",(row["id"],current,corrected,reason.strip(),user["id"]))
+        execute("""UPDATE obligations SET amount=%s,original_amount=COALESCE(original_amount,%s),custom_status='force_majeure',adjustment_reason=%s,adjusted_by=%s,adjusted_at=NOW() WHERE id=%s""",(corrected,original,reason.strip(),user["id"],row["id"]))
+        audit(user["id"],"force_majeure_adjustment","obligation",row["id"],f"{current}->{corrected}; {reason}")
+        st.success(f"Корекцията е записана: {current:.2f} → {corrected:.2f}."); rerun()
 
-    row_map = {
-        item["label"]: item
-        for item in available_rows
-    }
-
-    selected_label = st.selectbox(
-        "Избери конкретно задължение",
-        list(row_map.keys()),
-        key=f"adjustment_obligation_{apartment_id}_{year}",
-    )
-
-    selected_item = row_map[selected_label]
-    selected_row = selected_item["row"]
-    already_paid = selected_item["paid"]
-    current_amount = selected_item["amount"]
-
-    status_choice = st.selectbox(
-        "Статус / действие",
-        [
-            "Без промяна",
-            "Друг / форсмажор",
-        ],
-        key=f"adjustment_status_{selected_row['id']}",
-    )
-
-    if status_choice != "Друг / форсмажор":
-        st.info(
-            "Избери „Друг / форсмажор“, за да отключиш "
-            "корекцията на начислената цена."
-        )
-        return
-
-    st.warning(
-        "Корекцията променя начислената сума само за избрания ред. "
-        "Другите месеци и задължения не се променят."
-    )
-
-    minimum_amount = float(already_paid)
-
-    if already_paid > 0:
-        st.info(
-            f"По това задължение вече са платени {already_paid:.2f}. "
-            "Новата начислена сума не може да е по-малка от платеното."
-        )
-
-    with st.form(
-        f"force_majeure_form_{selected_row['id']}"
-    ):
-        new_amount = st.number_input(
-            "Нова начислена цена",
-            min_value=minimum_amount,
-            max_value=100000.00,
-            value=float(current_amount),
-            step=0.01,
-            format="%.2f",
-        )
-
-        reason = st.text_area(
-            "Задължително основание за корекция",
-            placeholder=(
-                "Например: необитаем апартамент, решение на общо събрание, "
-                "индивидуална корекция, допълнително начисление..."
-            ),
-        )
-
-        confirm_adjustment = st.checkbox(
-            "Потвърждавам промяната на начислената сума"
-        )
-
-        save_adjustment = st.form_submit_button(
-            "Запази форсмажорната корекция",
-            use_container_width=True,
-        )
-
-    if save_adjustment:
-        if not reason.strip():
-            st.error(
-                "Въведи основание за корекцията."
-            )
-            return
-
-        if not confirm_adjustment:
-            st.error(
-                "Потвърди промяната чрез отметката."
-            )
-            return
-
-        old_amount = Decimal(str(current_amount))
-        corrected_amount = Decimal(
-            str(new_amount)
-        ).quantize(Decimal("0.01"))
-
-        execute(
-            """
-            UPDATE obligations
-            SET
-                amount = %s,
-                note = %s
-            WHERE id = %s
-            """,
-            (
-                corrected_amount,
-                (
-                    f"ДРУГ / ФОРСМАЖОР: {reason.strip()} | "
-                    f"Предишна сума: {old_amount:.2f}"
-                ),
-                selected_row["id"],
-            ),
-        )
-
-        audit(
-            user["id"],
-            "force_majeure_obligation_adjustment",
-            "obligation",
-            selected_row["id"],
-            (
-                f"apartment_id={apartment_id}; "
-                f"year={year}; "
-                f"old_amount={old_amount}; "
-                f"new_amount={corrected_amount}; "
-                f"reason={reason.strip()}"
-            ),
-        )
-
-        if corrected_amount == Decimal("0.00"):
-            st.success(
-                "Задължението е коригирано на 0,00 и вече няма сума за плащане."
-            )
-        elif corrected_amount > old_amount:
-            st.success(
-                f"Задължението е увеличено от "
-                f"{old_amount:.2f} на {corrected_amount:.2f}."
-            )
-        elif corrected_amount < old_amount:
-            st.success(
-                f"Задължението е намалено от "
-                f"{old_amount:.2f} на {corrected_amount:.2f}."
-            )
-        else:
-            st.info(
-                "Сумата не е променена, но основанието е записано."
-            )
-
-        rerun()
 def cashier_page(user):
     st.title("💳 Каса")
     apts=fetch_all("SELECT id,apartment_number,property_type,adult_residents,annual_fro FROM apartments WHERE active ORDER BY apartment_number")
@@ -316,19 +193,16 @@ def cashier_page(user):
     c1,c2,c3,c4=st.columns(4); c1.metric("Обект",apt["apartment_number"]); c2.metric("Пълнолетни",apt["adult_residents"]); c3.metric("Платено",fmt(paid)); c4.metric("Остава",fmt(due))
     st.subheader("Финансов картон")
     selected,total=apartment_ledger(apt["id"],year,True,f"ledger_{apt['id']}_{year}")
-    force_majeure_adjustment(
-        user=user,
-        apartment_id=apt["id"],
-        year=year,
-        rows=rows,
-    )
-    st.divider(); c1,c2=st.columns([2,1]); c1.write(f"**Избрани позиции: {len(selected)}**"); c2.metric("Обща сума",fmt(total))
+    force_majeure_adjustment(user,apt["id"],year,rows)
+    currency=selected_currency_for_year(year)
+    st.divider(); c1,c2=st.columns([2,1]); c1.write(f"**Избрани позиции: {len(selected)}**"); c2.metric("Обща сума",f"{total:,.2f} {currency}".replace(","," "))
     note=st.text_input("Бележка / номер на платежно")
     b1,b2,b3=st.columns(3)
-    if b1.button("💵 В брой",use_container_width=True,disabled=not selected): create_payment(apt["id"],selected,"cash",user["id"],"confirmed",note); st.success("Плащането е записано."); rerun()
-    if b2.button("🏦 По банка",use_container_width=True,disabled=not selected): create_payment(apt["id"],selected,"bank",user["id"],"confirmed",note); st.success("Плащането е записано."); rerun()
+    if b1.button("💵 В брой",use_container_width=True,disabled=not selected): record_payment_with_currency(apt["id"],selected,"cash",user["id"],note,currency); st.success("Плащането е записано."); rerun()
+    if b2.button("🏦 По банка",use_container_width=True,disabled=not selected): record_payment_with_currency(apt["id"],selected,"bank",user["id"],note,currency); st.success("Плащането е записано."); rerun()
     if b3.button("💳 Карта / NFC",use_container_width=True,disabled=not selected):
-        num=create_payment(apt["id"],selected,"card_softpos",user["id"],"pending",note or "SoftPOS")
+        if currency != "EUR": st.error("Картово плащане е разрешено само за EUR задължения."); return
+        num=record_payment_with_currency(apt["id"],selected,"card_softpos",user["id"],note or "SoftPOS",currency,"pending")
         p=fetch_one("SELECT id FROM payments WHERE payment_number=%s",(num,)); execute("UPDATE payments SET provider='mypos_glass',external_status='initiated' WHERE id=%s",(p["id"],))
         st.session_state.softpos={"id":p["id"],"number":num,"amount":str(total)}; rerun()
     pending=st.session_state.get("softpos")
@@ -354,8 +228,8 @@ def report_page(user):
     if not base:
         st.warning("Началните салда още не са приложени от Админ панел → Исторически статус.")
         base={"cash_amount":Decimal("0"),"bank_amount":Decimal("0"),"applied_at":date.today()}
-    cash_in=fetch_one("SELECT COALESCE(SUM(amount),0) total FROM payments WHERE status='confirmed' AND payment_method='cash' AND created_at>%s",(base["applied_at"],))["total"]
-    bank_in=fetch_one("SELECT COALESCE(SUM(amount),0) total FROM payments WHERE status='confirmed' AND payment_method IN ('bank','card_softpos') AND created_at>%s",(base["applied_at"],))["total"]
+    cash_in=fetch_one("SELECT COALESCE(SUM(amount),0) total FROM payments WHERE status='confirmed' AND payment_method='cash' AND source_currency='EUR' AND created_at>%s",(base["applied_at"],))["total"]
+    bank_in=fetch_one("SELECT COALESCE(SUM(amount),0) total FROM payments WHERE status='confirmed' AND payment_method IN ('bank','card_softpos') AND source_currency='EUR' AND created_at>%s",(base["applied_at"],))["total"]
     cash_out=fetch_one("SELECT COALESCE(SUM(amount),0) total FROM expenses WHERE source='cash' AND created_at>%s",(base["applied_at"],))["total"]
     bank_out=fetch_one("SELECT COALESCE(SUM(amount),0) total FROM expenses WHERE source='bank' AND created_at>%s",(base["applied_at"],))["total"]
     cash_balance=Decimal(base["cash_amount"])+Decimal(cash_in)-Decimal(cash_out)
@@ -364,7 +238,7 @@ def report_page(user):
     st.caption(f"Начално салдо: в брой {fmt(base['cash_amount'])}, банка {fmt(base['bank_amount'])}. След него отчетът добавя новите постъпления и изважда новите разходи.")
     st.subheader("Поток на постъпления и разходи")
     payments=fetch_all("""SELECT p.created_at AS дата,'Приход' AS поток,a.apartment_number AS обект,p.payment_number AS документ,
-        p.amount AS сума,CASE p.payment_method WHEN 'cash' THEN 'В брой' WHEN 'bank' THEN 'По банка' ELSE 'Карта / SoftPOS' END AS начин,
+        p.amount AS сума,p.source_currency AS валута,CASE p.payment_method WHEN 'cash' THEN 'В брой' WHEN 'bank' THEN 'По банка' ELSE 'Карта / SoftPOS' END AS начин,
         CASE p.status WHEN 'confirmed' THEN '🟢 Платено' WHEN 'pending' THEN '🔴 Неплатено / чака' ELSE '🔴 Отказано' END AS статус
         FROM payments p JOIN apartments a ON a.id=p.apartment_id WHERE p.created_at>%s""",(base["applied_at"],))
     expenses=fetch_all("""SELECT created_at AS дата,'Разход' AS поток,category AS обект,COALESCE(description,'') AS документ,
@@ -373,30 +247,12 @@ def report_page(user):
     flow=[dict(x) for x in payments]+[dict(x) for x in expenses]; flow.sort(key=lambda x:x["дата"],reverse=True)
     st.dataframe(flow,use_container_width=True,hide_index=True)
     if flow:
-        export_df = pd.DataFrame(flow).copy()
-    
+        export_df=pd.DataFrame(flow).copy()
         if "дата" in export_df.columns:
-            export_df["дата"] = pd.to_datetime(
-                export_df["дата"],
-                errors="coerce",
-                utc=True,
-            ).dt.tz_localize(None)
-    
-        out = io.BytesIO()
-    
-        export_df.to_excel(
-            out,
-            index=False,
-            engine="openpyxl",
-        )
-    
-        st.download_button(
-            "Изтегли отчет",
-            data=out.getvalue(),
-            file_name=f"building_report_{date.today()}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-        )
+            export_df["дата"]=pd.to_datetime(export_df["дата"],errors="coerce",utc=True).dt.tz_localize(None)
+        out=io.BytesIO()
+        export_df.to_excel(out,index=False,engine="openpyxl")
+        st.download_button("Изтегли отчет",data=out.getvalue(),file_name=f"building_report_{date.today()}.xlsx",mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",use_container_width=True)
 
 def expenses_page(user):
     st.title("Разходи")
@@ -414,7 +270,7 @@ def neighbor_page(user):
     if not user.get("apartment_id"): st.info("Профилът не е свързан с обект."); return
     default_year=YEARS.index(date.today().year) if date.today().year in YEARS else 0
     year=st.selectbox("Година",YEARS,index=default_year); apartment_ledger(user["apartment_id"],year,False)
-    
+
 def neighbor_archive(user):
     st.title("Архив")
     rows=fetch_all("SELECT payment_date AS дата,payment_number AS номер,amount AS сума,payment_method AS метод,status AS статус,note AS бележка FROM payments WHERE apartment_id=%s AND status='confirmed' ORDER BY payment_date DESC",(user["apartment_id"],)) if user.get("apartment_id") else []
@@ -444,10 +300,13 @@ def apply_historical_snapshot(data,user_id):
     if not marker: raise ValueError("Не е намерен блокът 2026 в първия лист.")
     # The Excel snapshot is authoritative for 2024-2026. Clear old allocations for these years,
     # including test entries, then rebuild statuses exactly from the source.
+    adjusted=fetch_one("SELECT COUNT(*) count FROM obligations WHERE year BETWEEN 2024 AND 2026 AND custom_status='force_majeure'")
+    if adjusted and adjusted["count"]>0:
+        raise ValueError("Има ръчни форсмажорни корекции за 2024–2026. Импортът е блокиран, за да не бъдат изтрити.")
     linked=fetch_all("""SELECT DISTINCT pa.payment_id FROM payment_allocations pa
         JOIN obligations o ON o.id=pa.obligation_id WHERE o.year BETWEEN 2024 AND 2026""")
+    execute("DELETE FROM payment_allocations WHERE obligation_id IN (SELECT id FROM obligations WHERE year BETWEEN 2024 AND 2026)")
     for x in linked:
-        execute("DELETE FROM payment_allocations WHERE payment_id=%s AND obligation_id IN (SELECT id FROM obligations WHERE year BETWEEN 2024 AND 2026)",(x["payment_id"],))
         execute("DELETE FROM payments WHERE id=%s AND NOT EXISTS (SELECT 1 FROM payment_allocations WHERE payment_id=%s)",(x["payment_id"],x["payment_id"]))
     execute("DELETE FROM obligations WHERE year BETWEEN 2024 AND 2026")
     stats={"objects":0,"paid_months":0,"fro_payments":0}
@@ -476,6 +335,7 @@ def apply_historical_snapshot(data,user_id):
                     num=f"HIST-ENT-{year}-{apt_id}-{month}"
                     pay=execute("""INSERT INTO payments(payment_number,apartment_id,amount,payment_method,status,payment_date,note,created_by,confirmed_by,confirmed_at)
                         VALUES(%s,%s,%s,'cash','confirmed',%s,'Исторически платено по Excel',%s,%s,NOW()) RETURNING id""",(num,apt_id,amount,date(year,month,1),user_id,user_id),True)
+                    execute("UPDATE payments SET source_currency=%s WHERE id=%s",(currency,pay["id"]))
                     if amount>0: execute("INSERT INTO payment_allocations(payment_id,obligation_id,amount) VALUES(%s,%s,%s)",(pay["id"],ob["id"],amount))
                     stats["paid_months"]+=1
             annual=_number(ws.cell(row,18).value) or Decimal("0"); fro_paid=_number(ws.cell(row,16).value) or Decimal("0")
@@ -490,6 +350,7 @@ def apply_historical_snapshot(data,user_id):
                 if remaining>0:
                     pay=execute("""INSERT INTO payments(payment_number,apartment_id,amount,payment_method,status,payment_date,note,created_by,confirmed_by,confirmed_at)
                         VALUES(%s,%s,%s,'cash','confirmed',%s,'Исторически ФРО по Excel',%s,%s,NOW()) RETURNING id""",(f"HIST-FRO-{year}-{apt_id}",apt_id,remaining,date(year,1,1),user_id,user_id),True)
+                    execute("UPDATE payments SET source_currency=%s WHERE id=%s",(currency,pay["id"]))
                     for oid,amount in obs:
                         part=min(amount,remaining)
                         if part>0: execute("INSERT INTO payment_allocations(payment_id,obligation_id,amount) VALUES(%s,%s,%s)",(pay["id"],oid,part)); remaining-=part
@@ -565,6 +426,9 @@ def admin_panel(user):
     with tabs[4]:
         rows=fetch_all("SELECT p.created_at AS дата,a.apartment_number AS обект,p.payment_number AS номер,p.amount AS сума,p.payment_method AS метод,p.status AS статус,p.provider_transaction_id AS референция FROM payments p JOIN apartments a ON a.id=p.apartment_id ORDER BY p.created_at DESC LIMIT 200")
         st.dataframe([{**dict(x),"метод":method_bg(x["метод"]),"статус":payment_status_bg(x["статус"])} for x in rows],use_container_width=True,hide_index=True)
+        st.subheader("История на форсмажорни корекции")
+        adjustments=fetch_all("""SELECT oa.changed_at AS дата,a.apartment_number AS обект,o.year AS година,o.month AS месец,o.fee_type AS вид,oa.old_amount AS стара_сума,oa.new_amount AS нова_сума,oa.action AS действие,oa.reason AS основание FROM obligation_adjustments oa JOIN obligations o ON o.id=oa.obligation_id JOIN apartments a ON a.id=o.apartment_id ORDER BY oa.changed_at DESC LIMIT 200""")
+        st.dataframe(adjustments,use_container_width=True,hide_index=True)
     with tabs[5]:
         with st.form("banner"):
             title=st.text_input("Заглавие"); body=st.text_area("Текст"); image=st.file_uploader("Снимка",type=["png","jpg","jpeg","webp"]); publish=st.form_submit_button("Публикувай")
