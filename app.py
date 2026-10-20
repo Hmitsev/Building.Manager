@@ -6,6 +6,7 @@ from urllib.parse import quote
 
 import pandas as pd
 from PIL import Image
+from openpyxl import load_workbook
 import streamlit as st
 
 from auth import hash_password, verify_password, login_user, logout_user, current_user
@@ -37,6 +38,10 @@ try:
     execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS provider VARCHAR(50)")
     execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS provider_transaction_id VARCHAR(150)")
     execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS external_status VARCHAR(40)")
+    execute("""CREATE TABLE IF NOT EXISTS balance_baseline (
+        id BIGSERIAL PRIMARY KEY, cash_amount NUMERIC(14,2) NOT NULL, bank_amount NUMERIC(14,2) NOT NULL,
+        applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), applied_by BIGINT REFERENCES users(id), note TEXT)""")
+    execute("ALTER TABLE obligations ADD COLUMN IF NOT EXISTS source_currency VARCHAR(3) NOT NULL DEFAULT 'EUR'")
 except Exception as exc:
     st.error(str(exc)); st.stop()
 
@@ -84,12 +89,12 @@ def apartment_ledger(apartment_id,year,editable=False,key="ledger"):
     rows=payment_rows(apartment_id,year); data=[]
     for r in rows:
         paid=Decimal(r["paid"]); left=max(Decimal("0"),Decimal(r["amount"])-paid)
-        data.append({"Плати":False,"Вид":kind_bg(r["fee_type"]),"Месец":MONTHS.get(r["month"],"Еднократно"),"Година":r["year"],"Начислено":float(r["amount"]),"Платено":float(paid),"Остатък":float(left),"Статус":"🟢 Платено" if left<=0 else "🟠 Частично" if paid>0 else "🔴 Неплатено","_id":r["id"]})
+        data.append({"Плати":False,"Вид":kind_bg(r["fee_type"]),"Месец":MONTHS.get(r["month"],"Еднократно"),"Година":r["year"],"Валута":r.get("source_currency") or ("BGN" if int(r["year"])<2026 else "EUR"),"Начислено":float(r["amount"]),"Платено":float(paid),"Остатък":float(left),"Статус":"🟢 Платено" if left<=0 else "🟠 Частично" if paid>0 else "🔴 Неплатено","_id":r["id"]})
     df=pd.DataFrame(data)
     if df.empty: st.info("Няма задължения."); return [],Decimal("0")
     base=df.drop(columns=["_id"])
     if editable:
-        view=st.data_editor(base,use_container_width=True,hide_index=True,disabled=["Вид","Месец","Година","Начислено","Платено","Остатък","Статус"],column_config={"Плати":st.column_config.CheckboxColumn("Плати"),"Начислено":st.column_config.NumberColumn(format="%.2f €"),"Платено":st.column_config.NumberColumn(format="%.2f €"),"Остатък":st.column_config.NumberColumn(format="%.2f €")},key=key)
+        view=st.data_editor(base,use_container_width=True,hide_index=True,disabled=["Вид","Месец","Година","Валута","Начислено","Платено","Остатък","Статус"],column_config={"Плати":st.column_config.CheckboxColumn("Плати"),"Начислено":st.column_config.NumberColumn(format="%.2f €"),"Платено":st.column_config.NumberColumn(format="%.2f €"),"Остатък":st.column_config.NumberColumn(format="%.2f €")},key=key)
     else:
         view=base.drop(columns=["Плати"]); st.dataframe(view,use_container_width=True,hide_index=True); return [],sum(Decimal(str(x)) for x in df["Остатък"])
     selected=[]
@@ -135,14 +140,32 @@ def cashier_page(user):
     hist=fetch_all("SELECT payment_date AS дата,payment_number AS номер,amount AS сума,payment_method AS метод,status AS статус,note AS бележка FROM payments WHERE apartment_id=%s ORDER BY created_at DESC LIMIT 20",(apt["id"],))
     st.dataframe([{**dict(x),"метод":method_bg(x["метод"]),"статус":payment_status_bg(x["статус"])} for x in hist],use_container_width=True,hide_index=True)
 
-def daily_report(user):
-    st.title("📊 Дневен отчет")
-    r=fetch_one("SELECT COALESCE(SUM(amount) FILTER(WHERE payment_method='cash' AND status='confirmed'),0) cash,COALESCE(SUM(amount) FILTER(WHERE payment_method='bank' AND status='confirmed'),0) bank,COALESCE(SUM(amount) FILTER(WHERE payment_method='card_softpos' AND status='confirmed'),0) card FROM payments WHERE payment_date=CURRENT_DATE AND confirmed_by=%s",(user["id"],))
-    c1,c2,c3,c4=st.columns(4); c1.metric("В брой",fmt(r["cash"])); c2.metric("По банка",fmt(r["bank"])); c3.metric("С карта",fmt(r["card"])); c4.metric("Общо",fmt(Decimal(r["cash"])+Decimal(r["bank"])+Decimal(r["card"])))
-    rows=fetch_all("SELECT p.payment_date AS дата,a.apartment_number AS обект,p.payment_number AS номер,p.amount AS сума,p.payment_method AS метод,p.status AS статус FROM payments p JOIN apartments a ON a.id=p.apartment_id WHERE p.payment_date=CURRENT_DATE AND p.confirmed_by=%s ORDER BY p.confirmed_at DESC",(user["id"],))
-    display=[{**dict(x),"метод":method_bg(x["метод"]),"статус":payment_status_bg(x["статус"])} for x in rows]; st.dataframe(display,use_container_width=True,hide_index=True)
-    if display:
-        out=io.BytesIO(); pd.DataFrame(display).to_excel(out,index=False,engine="openpyxl"); st.download_button("Изтегли дневен отчет",out.getvalue(),f"cashier_{date.today()}.xlsx")
+def report_page(user):
+    st.title("📊 Отчет")
+    base=fetch_one("SELECT * FROM balance_baseline ORDER BY applied_at DESC LIMIT 1")
+    if not base:
+        st.warning("Началните салда още не са приложени от Админ панел → Исторически статус.")
+        base={"cash_amount":Decimal("0"),"bank_amount":Decimal("0"),"applied_at":date.today()}
+    cash_in=fetch_one("SELECT COALESCE(SUM(amount),0) total FROM payments WHERE status='confirmed' AND payment_method='cash' AND created_at>%s",(base["applied_at"],))["total"]
+    bank_in=fetch_one("SELECT COALESCE(SUM(amount),0) total FROM payments WHERE status='confirmed' AND payment_method IN ('bank','card_softpos') AND created_at>%s",(base["applied_at"],))["total"]
+    cash_out=fetch_one("SELECT COALESCE(SUM(amount),0) total FROM expenses WHERE source='cash' AND created_at>%s",(base["applied_at"],))["total"]
+    bank_out=fetch_one("SELECT COALESCE(SUM(amount),0) total FROM expenses WHERE source='bank' AND created_at>%s",(base["applied_at"],))["total"]
+    cash_balance=Decimal(base["cash_amount"])+Decimal(cash_in)-Decimal(cash_out)
+    bank_balance=Decimal(base["bank_amount"])+Decimal(bank_in)-Decimal(bank_out)
+    c1,c2,c3=st.columns(3); c1.metric("Каса в брой",fmt(cash_balance)); c2.metric("Каса банка",fmt(bank_balance)); c3.metric("Всичко",fmt(cash_balance+bank_balance))
+    st.caption(f"Начално салдо: в брой {fmt(base['cash_amount'])}, банка {fmt(base['bank_amount'])}. След него отчетът добавя новите постъпления и изважда новите разходи.")
+    st.subheader("Поток на постъпления и разходи")
+    payments=fetch_all("""SELECT p.created_at AS дата,'Приход' AS поток,a.apartment_number AS обект,p.payment_number AS документ,
+        p.amount AS сума,CASE p.payment_method WHEN 'cash' THEN 'В брой' WHEN 'bank' THEN 'По банка' ELSE 'Карта / SoftPOS' END AS начин,
+        CASE p.status WHEN 'confirmed' THEN '🟢 Платено' WHEN 'pending' THEN '🔴 Неплатено / чака' ELSE '🔴 Отказано' END AS статус
+        FROM payments p JOIN apartments a ON a.id=p.apartment_id WHERE p.created_at>%s""",(base["applied_at"],))
+    expenses=fetch_all("""SELECT created_at AS дата,'Разход' AS поток,category AS обект,COALESCE(description,'') AS документ,
+        -amount AS сума,CASE source WHEN 'cash' THEN 'В брой' ELSE 'По банка' END AS начин,'Разход' AS статус
+        FROM expenses WHERE created_at>%s""",(base["applied_at"],))
+    flow=[dict(x) for x in payments]+[dict(x) for x in expenses]; flow.sort(key=lambda x:x["дата"],reverse=True)
+    st.dataframe(flow,use_container_width=True,hide_index=True)
+    if flow:
+        out=io.BytesIO(); pd.DataFrame(flow).to_excel(out,index=False,engine="openpyxl"); st.download_button("Изтегли отчет",out.getvalue(),f"building_report_{date.today()}.xlsx")
 
 def expenses_page(user):
     st.title("Разходи")
@@ -166,9 +189,100 @@ def neighbor_archive(user):
     rows=fetch_all("SELECT payment_date AS дата,payment_number AS номер,amount AS сума,payment_method AS метод,status AS статус,note AS бележка FROM payments WHERE apartment_id=%s AND status='confirmed' ORDER BY payment_date DESC",(user["apartment_id"],)) if user.get("apartment_id") else []
     st.dataframe([{**dict(x),"метод":method_bg(x["метод"]),"статус":payment_status_bg(x["статус"])} for x in rows],use_container_width=True,hide_index=True)
 
+
+def _object_name(value):
+    if isinstance(value,float) and value.is_integer(): return str(int(value))
+    return str(value).strip()
+
+
+def _is_object_name(name):
+    low=name.lower(); return name.isdigit() and 1<=int(name)<=59 or "офис" in low or low.startswith("пм")
+
+
+def _number(value):
+    if value is None or str(value).strip()=="": return None
+    if isinstance(value,(int,float,Decimal)): return Decimal(str(value))
+    import re
+    m=re.search(r"-?\d+(?:[.,]\d+)?",str(value).replace(" ",""))
+    return Decimal(m.group(0).replace(",",".")) if m else None
+
+
+def apply_historical_snapshot(data,user_id):
+    wb=load_workbook(io.BytesIO(data),data_only=True); ws=wb.worksheets[0]
+    marker=next((r for r in range(1,ws.max_row+1) if str(ws.cell(r,3).value).strip()=="2026"),None)
+    if not marker: raise ValueError("Не е намерен блокът 2026 в първия лист.")
+    # The Excel snapshot is authoritative for 2024-2026. Clear old allocations for these years,
+    # including test entries, then rebuild statuses exactly from the source.
+    linked=fetch_all("""SELECT DISTINCT pa.payment_id FROM payment_allocations pa
+        JOIN obligations o ON o.id=pa.obligation_id WHERE o.year BETWEEN 2024 AND 2026""")
+    for x in linked:
+        execute("DELETE FROM payment_allocations WHERE payment_id=%s AND obligation_id IN (SELECT id FROM obligations WHERE year BETWEEN 2024 AND 2026)",(x["payment_id"],))
+        execute("DELETE FROM payments WHERE id=%s AND NOT EXISTS (SELECT 1 FROM payment_allocations WHERE payment_id=%s)",(x["payment_id"],x["payment_id"]))
+    execute("DELETE FROM obligations WHERE year BETWEEN 2024 AND 2026")
+    stats={"objects":0,"paid_months":0,"fro_payments":0}
+    for year,start_row,end_row in ((2025,2,marker-1),(2026,marker+1,ws.max_row)):
+        currency="BGN" if year<2026 else "EUR"
+        for row in range(start_row,end_row+1):
+            raw=ws.cell(row,3).value
+            if raw is None: continue
+            name=_object_name(raw)
+            if not _is_object_name(name): continue
+            apt=fetch_one("SELECT id FROM apartments WHERE lower(apartment_number)=lower(%s)",(name,))
+            if not apt:
+                typ="Офис" if "офис" in name.lower() else "Паркомясто" if name.lower().startswith("пм") else "Апартамент"
+                apt=execute("INSERT INTO apartments(apartment_number,property_type,adult_residents,annual_fro) VALUES(%s,%s,1,0) RETURNING id",(name,typ),True)
+            apt_id=apt["id"]; stats["objects"]+=1
+            vals=[ws.cell(row,c).value for c in range(4,16)]
+            numeric=[_number(v) for v in vals if _number(v) is not None and _number(v)>0]
+            default_fee=max(set(numeric),key=numeric.count) if numeric else Decimal("12" if year==2026 else "20")
+            for month,cell in enumerate(vals,1):
+                n=_number(cell); amount=n if n is not None and n>0 else default_fee
+                ob=execute("""INSERT INTO obligations(apartment_id,fee_type,year,month,amount,note,source_currency)
+                    VALUES(%s,'entrance',%s,%s,%s,'Исторически статус от Excel',%s)
+                    ON CONFLICT(apartment_id,fee_type,year,month) DO UPDATE SET amount=EXCLUDED.amount,note=EXCLUDED.note,source_currency=EXCLUDED.source_currency RETURNING id""",(apt_id,year,month,amount,currency),True)
+                filled=cell is not None and str(cell).strip()!=""
+                if filled:
+                    num=f"HIST-ENT-{year}-{apt_id}-{month}"
+                    pay=execute("""INSERT INTO payments(payment_number,apartment_id,amount,payment_method,status,payment_date,note,created_by,confirmed_by,confirmed_at)
+                        VALUES(%s,%s,%s,'cash','confirmed',%s,'Исторически платено по Excel',%s,%s,NOW()) RETURNING id""",(num,apt_id,amount,date(year,month,1),user_id,user_id),True)
+                    if amount>0: execute("INSERT INTO payment_allocations(payment_id,obligation_id,amount) VALUES(%s,%s,%s)",(pay["id"],ob["id"],amount))
+                    stats["paid_months"]+=1
+            annual=_number(ws.cell(row,18).value) or Decimal("0"); fro_paid=_number(ws.cell(row,16).value) or Decimal("0")
+            if annual>0:
+                monthly=(annual/Decimal("12")).quantize(Decimal("0.01")); obs=[]
+                for month in range(1,13):
+                    amount=annual-monthly*11 if month==12 else monthly
+                    ob=execute("""INSERT INTO obligations(apartment_id,fee_type,year,month,amount,note,source_currency)
+                        VALUES(%s,'fro',%s,%s,%s,'Исторически ФРО от Excel',%s)
+                        ON CONFLICT(apartment_id,fee_type,year,month) DO UPDATE SET amount=EXCLUDED.amount,note=EXCLUDED.note,source_currency=EXCLUDED.source_currency RETURNING id""",(apt_id,year,month,amount,currency),True); obs.append((ob["id"],amount))
+                remaining=min(fro_paid,annual)
+                if remaining>0:
+                    pay=execute("""INSERT INTO payments(payment_number,apartment_id,amount,payment_method,status,payment_date,note,created_by,confirmed_by,confirmed_at)
+                        VALUES(%s,%s,%s,'cash','confirmed',%s,'Исторически ФРО по Excel',%s,%s,NOW()) RETURNING id""",(f"HIST-FRO-{year}-{apt_id}",apt_id,remaining,date(year,1,1),user_id,user_id),True)
+                    for oid,amount in obs:
+                        part=min(amount,remaining)
+                        if part>0: execute("INSERT INTO payment_allocations(payment_id,obligation_id,amount) VALUES(%s,%s,%s)",(pay["id"],oid,part)); remaining-=part
+                    stats["fro_payments"]+=1
+    # 2024: only these remain unpaid; all other 2024 legacy balances are treated as settled.
+    entrance={"36":120,"42":240,"45":240,"46":1,"47":1,"48":240,"19":240,"52":120,"29":240,"58":240,"59":240}
+    fro={"15":121.80,"20":129.18,"29":127.95,"30":115.65,"35":136.57,"36":125.49,"42":134.00,"49":134.00,"52":170.00,"53":130.00,"58":193.00,"59":215.00}
+    execute("DELETE FROM obligations WHERE year=2024 AND note IN ('Старо задължение от Excel','Остатък ФРО 2024')")
+    for name,amount in entrance.items():
+        apt=fetch_one("SELECT id FROM apartments WHERE lower(apartment_number)=lower(%s)",(name,))
+        if apt: execute("INSERT INTO obligations(apartment_id,fee_type,year,month,amount,note,source_currency) VALUES(%s,'old_debt',2024,0,%s,'Старо задължение от Excel','BGN') ON CONFLICT(apartment_id,fee_type,year,month) DO UPDATE SET amount=EXCLUDED.amount,note=EXCLUDED.note,source_currency='BGN'",(apt["id"],amount))
+    for name,amount in fro.items():
+        apt=fetch_one("SELECT id FROM apartments WHERE lower(apartment_number)=lower(%s)",(name,))
+        if apt:
+            execute("DELETE FROM obligations WHERE apartment_id=%s AND fee_type='fro' AND year=2024",(apt["id"],))
+            execute("INSERT INTO obligations(apartment_id,fee_type,year,month,amount,note,source_currency) VALUES(%s,'fro',2024,0,%s,'Остатък ФРО 2024','BGN')",(apt["id"],amount))
+    # Baseline is written after history, so historical rows do not change current cash balances.
+    execute("DELETE FROM balance_baseline")
+    execute("INSERT INTO balance_baseline(cash_amount,bank_amount,applied_at,applied_by,note) VALUES(2398.13,2096.53,NOW(),%s,'Начални наличности от Excel')",(user_id,))
+    audit(user_id,"apply_historical_snapshot","system",None,str(stats)); return stats
+
 def admin_panel(user):
     st.title("Административен панел")
-    tabs=st.tabs(["Табло","Апартаменти","Регистрации","Роли","Плащания","Банер","Експорт"])
+    tabs=st.tabs(["Табло","Апартаменти","Регистрации","Роли","Плащания","Банер","Исторически статус","Експорт"])
     with tabs[0]:
         s=fetch_one("SELECT (SELECT COUNT(*) FROM apartments WHERE active) a,(SELECT COUNT(*) FROM users WHERE account_status='pending') p,(SELECT COALESCE(SUM(amount),0) FROM payments WHERE status='confirmed') i,(SELECT COALESCE(SUM(amount),0) FROM expenses) e")
         c1,c2,c3,c4=st.columns(4); c1.metric("Обекти",s["a"]); c2.metric("Чакащи",s["p"]); c3.metric("Постъпления",fmt(s["i"])); c4.metric("Разходи",fmt(s["e"]))
@@ -228,6 +342,17 @@ def admin_panel(user):
             if image: im=Image.open(image).convert("RGB"); im.thumbnail((1600,700)); b=io.BytesIO(); im.save(b,"WEBP",quality=82); data=b.getvalue(); mime="image/webp"
             execute("UPDATE announcements SET active=FALSE"); execute("INSERT INTO announcements(title,body,image_data,image_mime,active,created_by) VALUES(%s,%s,%s,%s,TRUE,%s)",(title,body,data,mime,user["id"])); rerun()
     with tabs[6]:
+        st.subheader("Исторически статус 2024–2026")
+        st.info("Качи оригиналния Excel. Първият лист задава платените месеци и ФРО за 2025 и 2026. Задълженията за 2024 и началните каси са зададени по предоставения списък.")
+        file=st.file_uploader("Excel файл",type=["xlsx"],key="history_excel")
+        confirm=st.checkbox("Потвърждавам: начална каса 2 398,13 €, банка 2 096,53 €")
+        if st.button("Приложи реалния исторически статус",type="primary",disabled=not(file and confirm)):
+            try:
+                stats=apply_historical_snapshot(file.getvalue(),user["id"]); st.success(f"Готово: {stats['paid_months']} платени месеца и {stats['fro_payments']} ФРО плащания."); rerun()
+            except Exception as exc: st.error(f"Миграцията не беше приложена: {exc}")
+        base=fetch_one("SELECT * FROM balance_baseline ORDER BY applied_at DESC LIMIT 1")
+        if base: st.success(f"Активно начално салдо: в брой {fmt(base['cash_amount'])}, банка {fmt(base['bank_amount'])}")
+    with tabs[7]:
         rows=fetch_all("SELECT a.apartment_number,o.fee_type,o.year,o.month,o.amount,COALESCE(SUM(CASE WHEN p.status='confirmed' THEN pa.amount ELSE 0 END),0) paid FROM obligations o JOIN apartments a ON a.id=o.apartment_id LEFT JOIN payment_allocations pa ON pa.obligation_id=o.id LEFT JOIN payments p ON p.id=pa.payment_id GROUP BY a.apartment_number,o.id ORDER BY a.apartment_number,o.year,o.month")
         out=io.BytesIO(); pd.DataFrame(rows).to_excel(out,index=False,engine="openpyxl"); st.download_button("Изтегли общ отчет",out.getvalue(),"Building_Manager_Report.xlsx")
 
@@ -235,13 +360,13 @@ user=current_user()
 if not user: login_page(); st.stop()
 with st.sidebar:
     st.title("🏢 Building.Manager"); st.caption(f"{user['first_name']} {user['last_name']} | {user['role']}")
-    if user["role"]=="manager": pages=["Каса","Дневен отчет","Разходи","Админ панел"]
-    elif user["role"]=="cashier": pages=["Каса","Дневен отчет","Разходи"]
+    if user["role"]=="manager": pages=["Каса","Отчет","Разходи","Админ панел"]
+    elif user["role"]=="cashier": pages=["Каса","Отчет","Разходи"]
     else: pages=["Моите задължения","Архив","Разходи"]
     page=st.radio("Навигация",pages)
     if st.button("Изход",use_container_width=True): logout_user(); rerun()
 if page=="Каса": cashier_page(user)
-elif page=="Дневен отчет": daily_report(user)
+elif page=="Отчет": report_page(user)
 elif page=="Разходи": expenses_page(user)
 elif page=="Моите задължения": neighbor_page(user)
 elif page=="Архив": neighbor_archive(user)
