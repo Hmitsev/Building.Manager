@@ -25,6 +25,10 @@ div.stButton>button,div.stDownloadButton>button,a[data-testid="stLinkButton"]{co
 [data-baseweb="input"]>div,[data-baseweb="select"]>div,[data-baseweb="textarea"]>div,[data-testid="stNumberInput"]>div>div,[data-testid="stDateInput"]>div>div{background:#111b2c!important;border-color:rgba(148,163,184,.2)!important;border-radius:12px!important;color:#f8fafc!important}input,textarea{color:#f8fafc!important}[role="listbox"]{background:#111b2c!important;color:white!important}
 [data-testid="stForm"]{background:linear-gradient(145deg,rgba(18,28,46,.94),rgba(11,18,31,.94));border:1px solid var(--line);border-radius:18px;padding:20px}[data-testid="stDataFrame"],[data-testid="stTable"]{border:1px solid var(--line);border-radius:16px;overflow:hidden}
 @media(max-width:768px){.block-container{padding:1rem .8rem 2rem}h1{font-size:2rem!important}[data-testid="stMetricValue"]{font-size:1.45rem!important}div[data-testid="stMetric"]{min-height:100px;padding:15px}}
+
+.status-paid{display:inline-block;padding:4px 10px;border-radius:999px;background:rgba(34,197,94,.16);color:#4ade80;font-weight:800;border:1px solid rgba(74,222,128,.3)}
+.status-due{display:inline-block;padding:4px 10px;border-radius:999px;background:rgba(239,68,68,.16);color:#f87171;font-weight:800;border:1px solid rgba(248,113,113,.3)}
+.status-partial{display:inline-block;padding:4px 10px;border-radius:999px;background:rgba(249,115,22,.16);color:#fb923c;font-weight:800;border:1px solid rgba(251,146,60,.3)}
 </style>
 """, unsafe_allow_html=True)
 
@@ -40,7 +44,9 @@ except Exception as exc:
 def fmt(v): return f"{Decimal(v or 0):,.2f} {CURRENCY}".replace(","," ")
 def rerun(): st.rerun()
 def method_bg(v): return {"cash":"В брой","bank":"По банка","card_softpos":"Карта / SoftPOS"}.get(v,v)
+def payment_status_bg(v): return {"confirmed":"🟢 Платено","pending":"🔴 Неплатено / чака потвърждение","cancelled":"🔴 Отказано","failed":"🔴 Неуспешно"}.get(v,v)
 def kind_bg(v): return {"entrance":"Такса вход","fro":"ФРО","old_debt":"Старо задължение"}.get(v,v)
+YEARS=list(range(2024,2041))
 
 def login_page():
     st.title("🏢 Building.Manager")
@@ -78,7 +84,7 @@ def apartment_ledger(apartment_id,year,editable=False,key="ledger"):
     rows=payment_rows(apartment_id,year); data=[]
     for r in rows:
         paid=Decimal(r["paid"]); left=max(Decimal("0"),Decimal(r["amount"])-paid)
-        data.append({"Плати":False,"Вид":kind_bg(r["fee_type"]),"Месец":MONTHS.get(r["month"],"Еднократно"),"Година":r["year"],"Начислено":float(r["amount"]),"Платено":float(paid),"Остатък":float(left),"Статус":"Платено" if left<=0 else "Частично" if paid>0 else "Неплатено","_id":r["id"]})
+        data.append({"Плати":False,"Вид":kind_bg(r["fee_type"]),"Месец":MONTHS.get(r["month"],"Еднократно"),"Година":r["year"],"Начислено":float(r["amount"]),"Платено":float(paid),"Остатък":float(left),"Статус":"🟢 Платено" if left<=0 else "🟠 Частично" if paid>0 else "🔴 Неплатено","_id":r["id"]})
     df=pd.DataFrame(data)
     if df.empty: st.info("Няма задължения."); return [],Decimal("0")
     base=df.drop(columns=["_id"])
@@ -95,13 +101,10 @@ def cashier_page(user):
     st.title("💳 Каса")
     apts=fetch_all("SELECT id,apartment_number,property_type,adult_residents,annual_fro FROM apartments WHERE active ORDER BY apartment_number")
     amap={f"{a['apartment_number']} · {a['property_type']}":a for a in apts}
-    q=st.text_input("Търси апартамент или обект",placeholder="8, Офис 5, ПМ 26")
-    choices=[k for k in amap if q.lower().strip() in k.lower()] if q.strip() else list(amap)
-    if not choices: st.warning("Няма намерен обект."); return
-    selected_name=st.selectbox("Апартамент / обект",choices); apt=amap[selected_name]
-    years=[x["year"] for x in fetch_all("SELECT DISTINCT year FROM obligations WHERE apartment_id=%s ORDER BY year DESC",(apt["id"],))]
-    if date.today().year not in years: years.insert(0,date.today().year)
-    year=st.selectbox("Година",years or [date.today().year])
+    if not amap: st.warning("Няма добавени обекти."); return
+    selected_name=st.selectbox("Апартамент / обект",list(amap)); apt=amap[selected_name]
+    default_year=YEARS.index(date.today().year) if date.today().year in YEARS else 0
+    year=st.selectbox("Година",YEARS,index=default_year)
     rows=payment_rows(apt["id"],year); paid=sum(Decimal(x["paid"]) for x in rows); due=sum(max(Decimal("0"),Decimal(x["amount"])-Decimal(x["paid"])) for x in rows)
     c1,c2,c3,c4=st.columns(4); c1.metric("Обект",apt["apartment_number"]); c2.metric("Пълнолетни",apt["adult_residents"]); c3.metric("Платено",fmt(paid)); c4.metric("Остава",fmt(due))
     st.subheader("Финансов картон")
@@ -130,14 +133,14 @@ def cashier_page(user):
         if y.button("Откажи операцията",use_container_width=True): execute("UPDATE payments SET status='cancelled',external_status='cancelled' WHERE id=%s",(pending["id"],)); st.session_state.pop("softpos",None); rerun()
     st.subheader("Последни плащания")
     hist=fetch_all("SELECT payment_date AS дата,payment_number AS номер,amount AS сума,payment_method AS метод,status AS статус,note AS бележка FROM payments WHERE apartment_id=%s ORDER BY created_at DESC LIMIT 20",(apt["id"],))
-    st.dataframe([{**dict(x),"метод":method_bg(x["метод"])} for x in hist],use_container_width=True,hide_index=True)
+    st.dataframe([{**dict(x),"метод":method_bg(x["метод"]),"статус":payment_status_bg(x["статус"])} for x in hist],use_container_width=True,hide_index=True)
 
 def daily_report(user):
     st.title("📊 Дневен отчет")
     r=fetch_one("SELECT COALESCE(SUM(amount) FILTER(WHERE payment_method='cash' AND status='confirmed'),0) cash,COALESCE(SUM(amount) FILTER(WHERE payment_method='bank' AND status='confirmed'),0) bank,COALESCE(SUM(amount) FILTER(WHERE payment_method='card_softpos' AND status='confirmed'),0) card FROM payments WHERE payment_date=CURRENT_DATE AND confirmed_by=%s",(user["id"],))
     c1,c2,c3,c4=st.columns(4); c1.metric("В брой",fmt(r["cash"])); c2.metric("По банка",fmt(r["bank"])); c3.metric("С карта",fmt(r["card"])); c4.metric("Общо",fmt(Decimal(r["cash"])+Decimal(r["bank"])+Decimal(r["card"])))
     rows=fetch_all("SELECT p.payment_date AS дата,a.apartment_number AS обект,p.payment_number AS номер,p.amount AS сума,p.payment_method AS метод,p.status AS статус FROM payments p JOIN apartments a ON a.id=p.apartment_id WHERE p.payment_date=CURRENT_DATE AND p.confirmed_by=%s ORDER BY p.confirmed_at DESC",(user["id"],))
-    display=[{**dict(x),"метод":method_bg(x["метод"])} for x in rows]; st.dataframe(display,use_container_width=True,hide_index=True)
+    display=[{**dict(x),"метод":method_bg(x["метод"]),"статус":payment_status_bg(x["статус"])} for x in rows]; st.dataframe(display,use_container_width=True,hide_index=True)
     if display:
         out=io.BytesIO(); pd.DataFrame(display).to_excel(out,index=False,engine="openpyxl"); st.download_button("Изтегли дневен отчет",out.getvalue(),f"cashier_{date.today()}.xlsx")
 
@@ -155,13 +158,13 @@ def expenses_page(user):
 def neighbor_page(user):
     st.title("Моите задължения")
     if not user.get("apartment_id"): st.info("Профилът не е свързан с обект."); return
-    years=[x["year"] for x in fetch_all("SELECT DISTINCT year FROM obligations WHERE apartment_id=%s ORDER BY year DESC",(user["apartment_id"],))]
-    year=st.selectbox("Година",years or [date.today().year]); apartment_ledger(user["apartment_id"],year,False)
+    default_year=YEARS.index(date.today().year) if date.today().year in YEARS else 0
+    year=st.selectbox("Година",YEARS,index=default_year); apartment_ledger(user["apartment_id"],year,False)
 
 def neighbor_archive(user):
     st.title("Архив")
     rows=fetch_all("SELECT payment_date AS дата,payment_number AS номер,amount AS сума,payment_method AS метод,status AS статус,note AS бележка FROM payments WHERE apartment_id=%s AND status='confirmed' ORDER BY payment_date DESC",(user["apartment_id"],)) if user.get("apartment_id") else []
-    st.dataframe([{**dict(x),"метод":method_bg(x["метод"])} for x in rows],use_container_width=True,hide_index=True)
+    st.dataframe([{**dict(x),"метод":method_bg(x["метод"]),"статус":payment_status_bg(x["статус"])} for x in rows],use_container_width=True,hide_index=True)
 
 def admin_panel(user):
     st.title("Административен панел")
@@ -170,11 +173,38 @@ def admin_panel(user):
         s=fetch_one("SELECT (SELECT COUNT(*) FROM apartments WHERE active) a,(SELECT COUNT(*) FROM users WHERE account_status='pending') p,(SELECT COALESCE(SUM(amount),0) FROM payments WHERE status='confirmed') i,(SELECT COALESCE(SUM(amount),0) FROM expenses) e")
         c1,c2,c3,c4=st.columns(4); c1.metric("Обекти",s["a"]); c2.metric("Чакащи",s["p"]); c3.metric("Постъпления",fmt(s["i"])); c4.metric("Разходи",fmt(s["e"]))
     with tabs[1]:
+        st.subheader("Добавяне на нов обект")
         with st.form("apt"):
-            c1,c2,c3=st.columns(3); num=c1.text_input("Номер/обект"); typ=c2.selectbox("Тип",["Апартамент","Офис","Магазин","Гараж","Паркомясто"]); floor=c3.text_input("Етаж"); adults=st.number_input("Лица над 18 г.",0,20,1); fro=st.number_input("Годишен ФРО",0.0,10000.0,0.0,.01); add=st.form_submit_button("Добави")
+            c1,c2,c3=st.columns(3); num=c1.text_input("Номер/обект"); typ=c2.selectbox("Тип",["Апартамент","Офис","Магазин","Гараж","Паркомясто"]); floor=c3.text_input("Етаж")
+            adults=st.number_input("Лица над 18 г.",0,20,1); fro=st.number_input("Годишен ФРО",0.0,10000.0,0.0,.01); add=st.form_submit_button("Добави")
         if add and num:
             try: execute("INSERT INTO apartments(apartment_number,property_type,floor,adult_residents,annual_fro) VALUES(%s,%s,%s,%s,%s)",(num,typ,floor,adults,fro)); rerun()
             except Exception: st.error("Обектът вече съществува.")
+        st.divider(); st.subheader("Корекция на лица и годишен ФРО")
+        all_apts=fetch_all("SELECT id,apartment_number,property_type,adult_residents,annual_fro FROM apartments WHERE active ORDER BY apartment_number")
+        edit_map={f"{x['apartment_number']} · {x['property_type']}":x for x in all_apts}
+        if edit_map:
+            selected_key=st.selectbox("Избери обект за корекция",list(edit_map),key="edit_apartment")
+            current=edit_map[selected_key]
+            with st.form("edit_apartment_form"):
+                ec1,ec2=st.columns(2)
+                new_adults=ec1.number_input("Лица над 18 г.",0,20,int(current["adult_residents"]),key="edit_adults")
+                new_fro=ec2.number_input("Годишен ФРО (€)",0.0,10000.0,float(current["annual_fro"]),step=0.01,key="edit_fro")
+                effective_year=st.selectbox("Преизчисли неплатените задължения за година",YEARS,index=YEARS.index(date.today().year) if date.today().year in YEARS else 0)
+                save_edit=st.form_submit_button("Запази корекцията",use_container_width=True)
+            if save_edit:
+                execute("UPDATE apartments SET adult_residents=%s,annual_fro=%s WHERE id=%s",(new_adults,new_fro,current["id"]))
+                execute("INSERT INTO resident_history(apartment_id,adults,effective_from,reason,created_by) VALUES(%s,%s,%s,'Административна корекция',%s) ON CONFLICT(apartment_id,effective_from) DO UPDATE SET adults=EXCLUDED.adults,reason=EXCLUDED.reason,created_by=EXCLUDED.created_by",(current["id"],new_adults,date(int(effective_year),1,1),user["id"]))
+                # Update only unpaid obligations. Paid/partially paid records remain unchanged for audit safety.
+                execute("""UPDATE obligations o SET amount=%s WHERE o.apartment_id=%s AND o.year=%s AND o.fee_type='entrance'
+                    AND COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa JOIN payments p ON p.id=pa.payment_id WHERE pa.obligation_id=o.id AND p.status='confirmed'),0)=0""",(Decimal(new_adults)*Decimal('6'),current["id"],effective_year))
+                monthly=(Decimal(str(new_fro))/Decimal('12')).quantize(Decimal('0.01'))
+                for m in range(1,13):
+                    amount=Decimal(str(new_fro))-monthly*11 if m==12 else monthly
+                    execute("""UPDATE obligations o SET amount=%s WHERE o.apartment_id=%s AND o.year=%s AND o.month=%s AND o.fee_type='fro'
+                        AND COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa JOIN payments p ON p.id=pa.payment_id WHERE pa.obligation_id=o.id AND p.status='confirmed'),0)=0""",(amount,current["id"],effective_year,m))
+                audit(user["id"],"update_apartment_financial_settings","apartment",current["id"],f"adults={new_adults};fro={new_fro};year={effective_year}")
+                st.success("Корекцията е записана. Обновени са само неплатените задължения."); rerun()
         st.dataframe(fetch_all("SELECT apartment_number AS обект,property_type AS тип,adult_residents AS лица,annual_fro AS ФРО,status AS статус FROM apartments ORDER BY apartment_number"),use_container_width=True,hide_index=True)
     with tabs[2]:
         regs=fetch_all("SELECT u.id,u.first_name,u.last_name,u.email,a.apartment_number FROM users u LEFT JOIN apartments a ON a.id=u.apartment_id WHERE u.account_status='pending'")
@@ -189,7 +219,7 @@ def admin_panel(user):
             if c3.button("Запази",key=f"rs{x['id']}"): execute("UPDATE users SET role=%s,account_status='approved' WHERE id=%s",(role,x["id"])); audit(user["id"],"change_role","user",x["id"],role); rerun()
     with tabs[4]:
         rows=fetch_all("SELECT p.created_at AS дата,a.apartment_number AS обект,p.payment_number AS номер,p.amount AS сума,p.payment_method AS метод,p.status AS статус,p.provider_transaction_id AS референция FROM payments p JOIN apartments a ON a.id=p.apartment_id ORDER BY p.created_at DESC LIMIT 200")
-        st.dataframe([{**dict(x),"метод":method_bg(x["метод"])} for x in rows],use_container_width=True,hide_index=True)
+        st.dataframe([{**dict(x),"метод":method_bg(x["метод"]),"статус":payment_status_bg(x["статус"])} for x in rows],use_container_width=True,hide_index=True)
     with tabs[5]:
         with st.form("banner"):
             title=st.text_input("Заглавие"); body=st.text_area("Текст"); image=st.file_uploader("Снимка",type=["png","jpg","jpeg","webp"]); publish=st.form_submit_button("Публикувай")
