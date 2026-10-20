@@ -1,0 +1,17 @@
+BUILDING.MANAGER V1 - START
+
+1. Качи всички файлове в нов GitHub repository: Building.Manager
+2. Създай Neon PostgreSQL project.
+3. Копирай Neon DATABASE_URL.
+4. В Render създай Web Service от GitHub.
+5. Добави Environment Variables:
+   DATABASE_URL
+   ADMIN_EMAIL
+   ADMIN_PASSWORD
+   APP_SECRET
+   BUILDING_IBAN
+   BUILDING_PAYEE
+6. Deploy.
+7. Влез като администратор и добави апартаментите.
+
+Подробните инструкции са в README.md.
