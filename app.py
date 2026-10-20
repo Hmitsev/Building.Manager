@@ -1,12 +1,12 @@
 import io
 import os
-from datetime import date
+from datetime import date, datetime, time
 from decimal import Decimal
 from urllib.parse import quote
+from pathlib import Path
 
 import pandas as pd
 from PIL import Image
-from pathlib import Path
 from openpyxl import load_workbook
 import streamlit as st
 
@@ -53,6 +53,49 @@ try:
         id BIGSERIAL PRIMARY KEY, obligation_id BIGINT NOT NULL REFERENCES obligations(id) ON DELETE CASCADE,
         old_amount NUMERIC(12,2) NOT NULL, new_amount NUMERIC(12,2) NOT NULL, action VARCHAR(30) NOT NULL,
         reason TEXT NOT NULL, changed_by BIGINT REFERENCES users(id), changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
+    execute("""CREATE TABLE IF NOT EXISTS technical_issues (
+        id BIGSERIAL PRIMARY KEY, apartment_id BIGINT NOT NULL REFERENCES apartments(id),
+        created_by BIGINT REFERENCES users(id), title VARCHAR(200) NOT NULL, description TEXT NOT NULL,
+        category VARCHAR(60) NOT NULL, status VARCHAR(30) NOT NULL DEFAULT 'Нова заявка',
+        image_name TEXT, image_data BYTEA, image_mime VARCHAR(100),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
+    execute("""CREATE TABLE IF NOT EXISTS documents (
+        id BIGSERIAL PRIMARY KEY, title VARCHAR(220) NOT NULL, category VARCHAR(80) NOT NULL,
+        description TEXT, file_name TEXT NOT NULL, file_data BYTEA NOT NULL, file_mime VARCHAR(140),
+        archived BOOLEAN NOT NULL DEFAULT FALSE, is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+        created_by BIGINT REFERENCES users(id), created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        archived_at TIMESTAMPTZ, deleted_at TIMESTAMPTZ)""")
+    execute("""CREATE TABLE IF NOT EXISTS parking_spaces (
+        id BIGSERIAL PRIMARY KEY, space_number VARCHAR(50) UNIQUE,
+        apartment_id BIGINT REFERENCES apartments(id), notes TEXT,
+        active BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
+    execute("""CREATE TABLE IF NOT EXISTS polls (
+        id BIGSERIAL PRIMARY KEY, title VARCHAR(220) NOT NULL, question TEXT NOT NULL, description TEXT,
+        starts_at TIMESTAMPTZ NOT NULL, ends_at TIMESTAMPTZ NOT NULL,
+        active BOOLEAN NOT NULL DEFAULT TRUE, created_by BIGINT REFERENCES users(id),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
+    execute("""CREATE TABLE IF NOT EXISTS poll_options (
+        id BIGSERIAL PRIMARY KEY, poll_id BIGINT NOT NULL REFERENCES polls(id) ON DELETE CASCADE,
+        option_text VARCHAR(300) NOT NULL, sort_order INTEGER NOT NULL DEFAULT 0)""")
+    execute("""CREATE TABLE IF NOT EXISTS poll_attachments (
+        id BIGSERIAL PRIMARY KEY, poll_id BIGINT NOT NULL REFERENCES polls(id) ON DELETE CASCADE,
+        file_name TEXT NOT NULL, file_data BYTEA NOT NULL, file_mime VARCHAR(140),
+        is_image BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
+    execute("""CREATE TABLE IF NOT EXISTS poll_votes (
+        id BIGSERIAL PRIMARY KEY, poll_id BIGINT NOT NULL REFERENCES polls(id) ON DELETE CASCADE,
+        option_id BIGINT NOT NULL REFERENCES poll_options(id) ON DELETE CASCADE,
+        apartment_id BIGINT NOT NULL REFERENCES apartments(id), user_id BIGINT REFERENCES users(id),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(poll_id,apartment_id))""")
+    execute("ALTER TABLE announcements ADD COLUMN IF NOT EXISTS file_name TEXT")
+    execute("ALTER TABLE announcements ADD COLUMN IF NOT EXISTS file_data BYTEA")
+    execute("ALTER TABLE announcements ADD COLUMN IF NOT EXISTS file_mime VARCHAR(140)")
+    execute("CREATE INDEX IF NOT EXISTS idx_technical_issues_status ON technical_issues(status,created_at DESC)")
+    execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT FALSE")
+    execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN NOT NULL DEFAULT FALSE")
+    execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ")
+    execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ")
+    execute("CREATE INDEX IF NOT EXISTS idx_documents_archive ON documents(archived,is_deleted,created_at DESC)")
+    execute("CREATE INDEX IF NOT EXISTS idx_polls_period ON polls(starts_at,ends_at)")
 except Exception as exc:
     st.error(str(exc)); st.stop()
 
@@ -278,6 +321,239 @@ def neighbor_archive(user):
     st.dataframe([{**dict(x),"метод":method_bg(x["метод"]),"статус":payment_status_bg(x["статус"])} for x in rows],use_container_width=True,hide_index=True)
 
 
+
+MAX_UPLOAD_BYTES = 15 * 1024 * 1024
+
+
+def safe_upload(upload, allowed_prefixes=None):
+    if not upload: return None, None, None
+    data=upload.getvalue()
+    if len(data)>MAX_UPLOAD_BYTES: raise ValueError("Файлът е по-голям от 15 MB.")
+    mime=upload.type or "application/octet-stream"
+    if allowed_prefixes and not any(mime.startswith(prefix) for prefix in allowed_prefixes):
+        raise ValueError("Неподдържан тип файл.")
+    return upload.name,data,mime
+
+
+def safe_image(upload):
+    if not upload: return None,None,None
+    raw=upload.getvalue()
+    if len(raw)>MAX_UPLOAD_BYTES: raise ValueError("Снимката е по-голяма от 15 MB.")
+    im=Image.open(io.BytesIO(raw)).convert("RGB")
+    im.thumbnail((1600,1200))
+    out=io.BytesIO(); im.save(out,"WEBP",quality=82,method=6)
+    return getattr(upload,"name","camera.webp"),out.getvalue(),"image/webp"
+
+
+def technical_issues_page(user):
+    st.title("🛠️ Технически проблем")
+    if not user.get("apartment_id"):
+        st.info("Профилът не е свързан с апартамент или обект."); return
+    use_camera=st.checkbox("Използвай камера",key="issue_use_camera")
+    source=st.camera_input("Направете снимка",key="issue_camera") if use_camera else st.file_uploader("Качване от файл",type=["png","jpg","jpeg","webp"],key="issue_file")
+    with st.form("technical_issue_form"):
+        title=st.text_input("Заглавие")
+        description=st.text_area("Описание")
+        category=st.selectbox("Категория",["Осветление","Асансьор","Врата/достъп","ВиК","Електро","Почистване","Друг проблем"])
+        submit=st.form_submit_button("Изпрати сигнал",use_container_width=True)
+    if submit:
+        if not title.strip() or not description.strip(): st.error("Заглавието и описанието са задължителни.")
+        else:
+            try: name,data,mime=safe_image(source)
+            except Exception as exc: st.error(str(exc)); return
+            execute("""INSERT INTO technical_issues(apartment_id,created_by,title,description,category,image_name,image_data,image_mime)
+                VALUES(%s,%s,%s,%s,%s,%s,%s,%s)""",(user["apartment_id"],user["id"],title.strip(),description.strip(),category,name,data,mime))
+            audit(user["id"],"create_technical_issue","technical_issue",None,title.strip())
+            st.success("Сигналът е изпратен."); rerun()
+    st.subheader("Моите сигнали")
+    issues=fetch_all("SELECT * FROM technical_issues WHERE apartment_id=%s ORDER BY created_at DESC",(user["apartment_id"],))
+    if not issues: st.info("Все още няма подадени сигнали.")
+    for issue in issues:
+        icon={"Нова заявка":"🔴","В процес":"🟠","Решена":"🟢"}.get(issue["status"],"🔵")
+        with st.expander(f"{icon} {issue['status']} · {issue['title']} · {issue['created_at']:%d.%m.%Y}"):
+            st.write(f"**Категория:** {issue['category']}"); st.write(issue["description"])
+            if issue["image_data"]: st.image(bytes(issue["image_data"]),width=520)
+
+
+def announcements_page():
+    st.title("📢 Обяви")
+    rows=fetch_all("""SELECT * FROM announcements WHERE active
+        AND (starts_on IS NULL OR starts_on<=CURRENT_DATE)
+        AND (ends_on IS NULL OR ends_on>=CURRENT_DATE) ORDER BY created_at DESC""")
+    if not rows: st.info("Няма активни обяви.")
+    for row in rows:
+        with st.container(border=True):
+            if row["image_data"]: st.image(bytes(row["image_data"]),use_container_width=True)
+            st.subheader(row["title"]); st.write(row["body"] or "")
+            st.caption(f"Публикувано: {(row['starts_on'] or row['created_at'].date()):%d.%m.%Y}")
+            if row.get("file_data"):
+                st.download_button("Изтегли прикачения файл",bytes(row["file_data"]),row["file_name"] or "attachment",row["file_mime"] or "application/octet-stream",key=f"ann_download_{row['id']}")
+
+
+def parking_page():
+    st.title("🅿️ Паркоместа")
+    st.info("Модулът ще бъде активиран в бъдеща версия.")
+
+
+def documents_page():
+    st.title("📁 Документи")
+    active,archive=st.tabs(["Активни документи","Архив"])
+    for tab,archived in ((active,False),(archive,True)):
+        with tab:
+            rows=fetch_all("SELECT * FROM documents WHERE archived=%s AND is_deleted=FALSE ORDER BY created_at DESC",(archived,))
+            if not rows: st.info("Няма документи в тази секция.")
+            for row in rows:
+                with st.expander(f"{row['category']} · {row['title']}"):
+                    st.write(row["description"] or ""); st.caption(f"Качен: {row['created_at']:%d.%m.%Y}")
+                    st.download_button("Преглед / Изтегляне",bytes(row["file_data"]),row["file_name"],row["file_mime"] or "application/octet-stream",key=f"doc_download_{row['id']}")
+
+
+def voting_page(user):
+    st.title("🗳️ Електронно гласуване")
+    if not user.get("apartment_id"):
+        st.info("Профилът не е свързан с апартамент или обект."); return
+    polls=fetch_all("SELECT * FROM polls WHERE active AND starts_at<=NOW() AND ends_at>=NOW() ORDER BY ends_at")
+    if not polls: st.info("Няма активно гласуване.")
+    for poll in polls:
+        with st.container(border=True):
+            st.subheader(poll["title"]); st.write(f"**{poll['question']}**"); st.write(poll["description"] or "")
+            st.caption(f"Период: {poll['starts_at']:%d.%m.%Y %H:%M} – {poll['ends_at']:%d.%m.%Y %H:%M}")
+            for att in fetch_all("SELECT * FROM poll_attachments WHERE poll_id=%s ORDER BY id",(poll["id"],)):
+                if att["is_image"]: st.image(bytes(att["file_data"]),width=600)
+                st.download_button(f"Изтегли {att['file_name']}",bytes(att["file_data"]),att["file_name"],att["file_mime"] or "application/octet-stream",key=f"poll_attachment_{att['id']}")
+            previous=fetch_one("SELECT option_id FROM poll_votes WHERE poll_id=%s AND apartment_id=%s",(poll["id"],user["apartment_id"]))
+            options=fetch_all("SELECT * FROM poll_options WHERE poll_id=%s ORDER BY sort_order,id",(poll["id"],))
+            option_map={o["option_text"]:o["id"] for o in options}
+            if previous:
+                chosen=next((o["option_text"] for o in options if o["id"]==previous["option_id"]),"")
+                st.success(f"Апартаментът вече е гласувал: {chosen}")
+            elif options:
+                choice=st.radio("Изберете отговор",list(option_map),key=f"poll_choice_{poll['id']}")
+                if st.button("Подай глас",key=f"poll_vote_{poll['id']}",type="primary"):
+                    try:
+                        execute("INSERT INTO poll_votes(poll_id,option_id,apartment_id,user_id) VALUES(%s,%s,%s,%s)",(poll["id"],option_map[choice],user["apartment_id"],user["id"]))
+                        audit(user["id"],"vote","poll",poll["id"],choice); st.success("Гласът е записан."); rerun()
+                    except Exception: st.warning("Този апартамент вече е гласувал.")
+
+
+def admin_technical_tab(user):
+    issues=fetch_all("""SELECT ti.*,a.apartment_number FROM technical_issues ti
+        JOIN apartments a ON a.id=ti.apartment_id
+        ORDER BY CASE ti.status WHEN 'Нова заявка' THEN 1 WHEN 'В процес' THEN 2 ELSE 3 END,ti.created_at DESC""")
+    if not issues: st.info("Няма технически сигнали.")
+    for issue in issues:
+        with st.expander(f"Ап. {issue['apartment_number']} · {issue['status']} · {issue['title']}"):
+            st.write(f"**Категория:** {issue['category']}"); st.write(issue["description"])
+            if issue["image_data"]: st.image(bytes(issue["image_data"]),width=520)
+            statuses=["Нова заявка","В процес","Решена"]
+            status=st.selectbox("Статус",statuses,index=statuses.index(issue["status"]) if issue["status"] in statuses else 0,key=f"issue_status_{issue['id']}")
+            if st.button("Запази статус",key=f"issue_save_{issue['id']}"):
+                execute("UPDATE technical_issues SET status=%s,updated_at=NOW() WHERE id=%s",(status,issue["id"]))
+                audit(user["id"],"update_technical_issue","technical_issue",issue["id"],status); rerun()
+
+
+def admin_announcements_tab(user):
+    st.subheader("Нова обява")
+    title=st.text_input("Заглавие",key="announcement_title")
+    body=st.text_area("Текст",key="announcement_body")
+    c1,c2=st.columns(2)
+    image=c1.file_uploader("Снимка",type=["png","jpg","jpeg","webp"],key="announcement_image")
+    attachment=c2.file_uploader("Файл",key="announcement_file")
+    date_col,active_col=st.columns(2)
+    published=date_col.date_input("Дата на публикуване",date.today(),key="announcement_date")
+    active=active_col.checkbox("Активна",True,key="announcement_active")
+    if st.button("Публикувай обявата",type="primary",use_container_width=True):
+        if not title.strip(): st.error("Заглавието е задължително.")
+        else:
+            try:
+                _,image_data,image_mime=safe_image(image)
+                file_name,file_data,file_mime=safe_upload(attachment)
+            except Exception as exc: st.error(str(exc)); return
+            execute("""INSERT INTO announcements(title,body,image_data,image_mime,file_name,file_data,file_mime,active,starts_on,created_by)
+                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",(title.strip(),body,image_data,image_mime,file_name,file_data,file_mime,active,published,user["id"]))
+            audit(user["id"],"create_announcement","announcement",None,title.strip()); rerun()
+    st.subheader("Всички обяви")
+    for row in fetch_all("SELECT id,title,active,starts_on,created_at FROM announcements ORDER BY created_at DESC"):
+        c1,c2=st.columns([5,1]); c1.write(f"**{row['title']}** · {'Активна' if row['active'] else 'Неактивна'} · {(row['starts_on'] or row['created_at'].date()):%d.%m.%Y}")
+        if c2.button("Вкл./Изкл.",key=f"announcement_toggle_{row['id']}"):
+            execute("UPDATE announcements SET active=NOT active WHERE id=%s",(row["id"],)); rerun()
+
+
+def admin_documents_tab(user):
+    st.subheader("Качване на документ")
+    with st.form("admin_document_form"):
+        title=st.text_input("Заглавие")
+        category=st.selectbox("Категория",["Протоколи","Бюджети","Договори","Решения на общото събрание","Други документи"])
+        description=st.text_area("Описание")
+        upload=st.file_uploader("Документ")
+        save=st.form_submit_button("Запази документ",use_container_width=True)
+    if save:
+        if not title.strip() or not upload: st.error("Заглавието и документът са задължителни.")
+        else:
+            try: name,data,mime=safe_upload(upload)
+            except Exception as exc: st.error(str(exc)); return
+            execute("INSERT INTO documents(title,category,description,file_name,file_data,file_mime,created_by) VALUES(%s,%s,%s,%s,%s,%s,%s)",(title.strip(),category,description,name,data,mime,user["id"]))
+            audit(user["id"],"upload_document","document",None,title.strip()); rerun()
+    active,archive,deleted=st.tabs(["Активни","Архив","Изтрити"])
+    for tab,where in ((active,"archived=FALSE AND is_deleted=FALSE"),(archive,"archived=TRUE AND is_deleted=FALSE"),(deleted,"is_deleted=TRUE")):
+        with tab:
+            for row in fetch_all(f"SELECT * FROM documents WHERE {where} ORDER BY created_at DESC"):
+                c1,c2,c3=st.columns([5,1,1]); c1.write(f"**{row['title']}** · {row['category']}")
+                if not row["is_deleted"]:
+                    if c2.button("Архив/Върни",key=f"document_archive_{row['id']}"):
+                        execute("UPDATE documents SET archived=NOT archived,archived_at=CASE WHEN archived THEN NULL ELSE NOW() END WHERE id=%s",(row["id"],)); rerun()
+                    if c3.button("Изтрий",key=f"document_delete_{row['id']}"):
+                        execute("UPDATE documents SET is_deleted=TRUE,archived=TRUE,deleted_at=NOW() WHERE id=%s",(row["id"],)); audit(user["id"],"soft_delete_document","document",row["id"]); rerun()
+                elif c2.button("Възстанови",key=f"document_restore_{row['id']}"):
+                    execute("UPDATE documents SET is_deleted=FALSE,deleted_at=NULL WHERE id=%s",(row["id"],)); rerun()
+
+
+def admin_polls_tab(user):
+    st.subheader("Ново гласуване")
+    title=st.text_input("Заглавие",key="poll_title")
+    question=st.text_input("Въпрос",key="poll_question")
+    description=st.text_area("Описание",key="poll_description")
+    mode=st.radio("Варианти",["Да / Не","Персонализирани опции"],horizontal=True)
+    custom=st.text_area("Персонализирани опции, по една на ред",disabled=mode=="Да / Не",key="poll_custom_options")
+    c1,c2=st.columns(2)
+    start_date=c1.date_input("Начална дата",date.today(),key="poll_start_date")
+    start_time=c1.time_input("Начален час",time(0,0),key="poll_start_time")
+    end_date=c2.date_input("Крайна дата",date.today(),key="poll_end_date")
+    end_time=c2.time_input("Краен час",time(23,59),key="poll_end_time")
+    files=st.file_uploader("Файлове и изображения",accept_multiple_files=True,key="poll_files")
+    if st.button("Създай гласуване",type="primary",use_container_width=True):
+        options=["Да","Не"] if mode=="Да / Не" else [x.strip() for x in custom.splitlines() if x.strip()]
+        starts=datetime.combine(start_date,start_time); ends=datetime.combine(end_date,end_time)
+        if not title.strip() or not question.strip() or len(options)<2 or ends<=starts:
+            st.error("Попълнете заглавие, въпрос, поне две опции и валиден период.")
+        else:
+            try:
+                attachments=[safe_upload(f) for f in files]
+            except Exception as exc: st.error(str(exc)); return
+            poll=execute("INSERT INTO polls(title,question,description,starts_at,ends_at,created_by) VALUES(%s,%s,%s,%s,%s,%s) RETURNING id",(title.strip(),question.strip(),description,starts,ends,user["id"]),True)
+            for order,option in enumerate(options): execute("INSERT INTO poll_options(poll_id,option_text,sort_order) VALUES(%s,%s,%s)",(poll["id"],option,order))
+            for name,data,mime in attachments:
+                execute("INSERT INTO poll_attachments(poll_id,file_name,file_data,file_mime,is_image) VALUES(%s,%s,%s,%s,%s)",(poll["id"],name,data,mime,bool(mime and mime.startswith("image/"))))
+            audit(user["id"],"create_poll","poll",poll["id"],title.strip()); rerun()
+    st.subheader("Гласувания и резултати")
+    polls=fetch_all("SELECT * FROM polls ORDER BY created_at DESC")
+    if not polls: st.info("Няма създадени гласувания.")
+    for poll in polls:
+        now=datetime.now(poll["ends_at"].tzinfo) if poll["ends_at"].tzinfo else datetime.now()
+        state="Активно" if poll["active"] and poll["starts_at"]<=now<=poll["ends_at"] else "Приключило / архив"
+        with st.expander(f"{state} · {poll['title']}"):
+            total=fetch_one("SELECT COUNT(*) AS count FROM poll_votes WHERE poll_id=%s",(poll["id"],))["count"]
+            st.write(f"**{poll['question']}**"); st.caption(f"Гласували апартаменти: {total}")
+            results=fetch_all("""SELECT po.option_text,COUNT(pv.id) AS votes FROM poll_options po
+                LEFT JOIN poll_votes pv ON pv.option_id=po.id WHERE po.poll_id=%s
+                GROUP BY po.id ORDER BY po.sort_order,po.id""",(poll["id"],))
+            for result in results:
+                percent=(result["votes"]/total*100) if total else 0
+                st.write(f"**{result['option_text']}**: {result['votes']} гласа · {percent:.1f}%")
+                st.progress(percent/100 if percent else 0)
+            if st.button("Активирай/Деактивирай",key=f"poll_toggle_{poll['id']}"):
+                execute("UPDATE polls SET active=NOT active WHERE id=%s",(poll["id"],)); rerun()
+
 def _object_name(value):
     if isinstance(value,float) and value.is_integer(): return str(int(value))
     return str(value).strip()
@@ -375,7 +651,7 @@ def apply_historical_snapshot(data,user_id):
 
 def admin_panel(user):
     st.title("Административен панел")
-    tabs=st.tabs(["Табло","Апартаменти","Регистрации","Роли","Плащания","Банер","Исторически статус","Експорт"])
+    tabs=st.tabs(["Табло","Апартаменти","Регистрации","Роли","Плащания","Банер","Исторически статус","Експорт","Технически проблеми","Обяви","Документи","Гласувания","Паркоместа"])
     with tabs[0]:
         s=fetch_one("SELECT (SELECT COUNT(*) FROM apartments WHERE active) a,(SELECT COUNT(*) FROM users WHERE account_status='pending') p,(SELECT COALESCE(SUM(amount),0) FROM payments WHERE status='confirmed') i,(SELECT COALESCE(SUM(amount),0) FROM expenses) e")
         c1,c2,c3,c4=st.columns(4); c1.metric("Обекти",s["a"]); c2.metric("Чакащи",s["p"]); c3.metric("Постъпления",fmt(s["i"])); c4.metric("Разходи",fmt(s["e"]))
@@ -451,6 +727,11 @@ def admin_panel(user):
     with tabs[7]:
         rows=fetch_all("SELECT a.apartment_number,o.fee_type,o.year,o.month,o.amount,COALESCE(SUM(CASE WHEN p.status='confirmed' THEN pa.amount ELSE 0 END),0) paid FROM obligations o JOIN apartments a ON a.id=o.apartment_id LEFT JOIN payment_allocations pa ON pa.obligation_id=o.id LEFT JOIN payments p ON p.id=pa.payment_id GROUP BY a.apartment_number,o.id ORDER BY a.apartment_number,o.year,o.month")
         out=io.BytesIO(); pd.DataFrame(rows).to_excel(out,index=False,engine="openpyxl"); st.download_button("Изтегли общ отчет",out.getvalue(),"Building_Manager_Report.xlsx")
+    with tabs[8]: admin_technical_tab(user)
+    with tabs[9]: admin_announcements_tab(user)
+    with tabs[10]: admin_documents_tab(user)
+    with tabs[11]: admin_polls_tab(user)
+    with tabs[12]: parking_page()
 
 user=current_user()
 if not user: login_page(); st.stop()
@@ -458,7 +739,7 @@ with st.sidebar:
     st.title("🏢 Building.Manager"); st.caption(f"{user['first_name']} {user['last_name']} | {user['role']}")
     if user["role"]=="manager": pages=["Каса","Отчет","Разходи","Админ панел"]
     elif user["role"]=="cashier": pages=["Каса","Отчет","Разходи"]
-    else: pages=["Моите задължения","Архив","Разходи"]
+    else: pages=["Моите задължения","Архив","Разходи","Технически проблем","Обяви","Документи","Електронно гласуване","Паркоместа"]
     page=st.radio("Навигация",pages)
     if st.button("Изход",use_container_width=True): logout_user(); rerun()
 if page=="Каса": cashier_page(user)
@@ -466,4 +747,9 @@ elif page=="Отчет": report_page(user)
 elif page=="Разходи": expenses_page(user)
 elif page=="Моите задължения": neighbor_page(user)
 elif page=="Архив": neighbor_archive(user)
+elif page=="Технически проблем": technical_issues_page(user)
+elif page=="Обяви": announcements_page()
+elif page=="Документи": documents_page()
+elif page=="Електронно гласуване": voting_page(user)
+elif page=="Паркоместа": parking_page()
 elif page=="Админ панел": admin_panel(user)
