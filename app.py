@@ -113,7 +113,197 @@ def apartment_ledger(apartment_id,year,editable=False,key="ledger"):
     for i,row in view.iterrows():
         if bool(row["Плати"]) and Decimal(str(row["Остатък"]))>0: selected.append({"id":int(df.iloc[i]["_id"]),"amount":Decimal(str(row["Остатък"])),"label":f"{row['Вид']} {row['Месец']} {row['Година']}"})
     return selected,sum((x["amount"] for x in selected),Decimal("0"))
+def force_majeure_adjustment(user, apartment_id, year, rows):
+    """
+    Административна корекция на конкретно задължение.
+    Достъпна е само за manager.
+    """
 
+    if user["role"] != "manager":
+        return
+
+    st.divider()
+    st.subheader("⚙️ Друг статус / форсмажорна корекция")
+
+    st.caption(
+        "Използвай тази секция само при изключение: освобождаване от такса, "
+        "индивидуална договорка, допълнително начисление или друга корекция."
+    )
+
+    available_rows = []
+
+    for row in rows:
+        paid = Decimal(row["paid"])
+        amount = Decimal(row["amount"])
+        remaining = max(Decimal("0"), amount - paid)
+
+        label = (
+            f"{kind_bg(row['fee_type'])} · "
+            f"{MONTHS.get(row['month'], 'Еднократно')} · "
+            f"{row['year']} · "
+            f"Начислено {amount:.2f} · "
+            f"Платено {paid:.2f} · "
+            f"Остатък {remaining:.2f}"
+        )
+
+        available_rows.append(
+            {
+                "label": label,
+                "row": row,
+                "paid": paid,
+                "amount": amount,
+                "remaining": remaining,
+            }
+        )
+
+    if not available_rows:
+        st.info("Няма задължения за корекция.")
+        return
+
+    row_map = {
+        item["label"]: item
+        for item in available_rows
+    }
+
+    selected_label = st.selectbox(
+        "Избери конкретно задължение",
+        list(row_map.keys()),
+        key=f"adjustment_obligation_{apartment_id}_{year}",
+    )
+
+    selected_item = row_map[selected_label]
+    selected_row = selected_item["row"]
+    already_paid = selected_item["paid"]
+    current_amount = selected_item["amount"]
+
+    status_choice = st.selectbox(
+        "Статус / действие",
+        [
+            "Без промяна",
+            "Друг / форсмажор",
+        ],
+        key=f"adjustment_status_{selected_row['id']}",
+    )
+
+    if status_choice != "Друг / форсмажор":
+        st.info(
+            "Избери „Друг / форсмажор“, за да отключиш "
+            "корекцията на начислената цена."
+        )
+        return
+
+    st.warning(
+        "Корекцията променя начислената сума само за избрания ред. "
+        "Другите месеци и задължения не се променят."
+    )
+
+    minimum_amount = float(already_paid)
+
+    if already_paid > 0:
+        st.info(
+            f"По това задължение вече са платени {already_paid:.2f}. "
+            "Новата начислена сума не може да е по-малка от платеното."
+        )
+
+    with st.form(
+        f"force_majeure_form_{selected_row['id']}"
+    ):
+        new_amount = st.number_input(
+            "Нова начислена цена",
+            min_value=minimum_amount,
+            max_value=100000.00,
+            value=float(current_amount),
+            step=0.01,
+            format="%.2f",
+        )
+
+        reason = st.text_area(
+            "Задължително основание за корекция",
+            placeholder=(
+                "Например: необитаем апартамент, решение на общо събрание, "
+                "индивидуална корекция, допълнително начисление..."
+            ),
+        )
+
+        confirm_adjustment = st.checkbox(
+            "Потвърждавам промяната на начислената сума"
+        )
+
+        save_adjustment = st.form_submit_button(
+            "Запази форсмажорната корекция",
+            use_container_width=True,
+        )
+
+    if save_adjustment:
+        if not reason.strip():
+            st.error(
+                "Въведи основание за корекцията."
+            )
+            return
+
+        if not confirm_adjustment:
+            st.error(
+                "Потвърди промяната чрез отметката."
+            )
+            return
+
+        old_amount = Decimal(str(current_amount))
+        corrected_amount = Decimal(
+            str(new_amount)
+        ).quantize(Decimal("0.01"))
+
+        execute(
+            """
+            UPDATE obligations
+            SET
+                amount = %s,
+                note = %s
+            WHERE id = %s
+            """,
+            (
+                corrected_amount,
+                (
+                    f"ДРУГ / ФОРСМАЖОР: {reason.strip()} | "
+                    f"Предишна сума: {old_amount:.2f}"
+                ),
+                selected_row["id"],
+            ),
+        )
+
+        audit(
+            user["id"],
+            "force_majeure_obligation_adjustment",
+            "obligation",
+            selected_row["id"],
+            (
+                f"apartment_id={apartment_id}; "
+                f"year={year}; "
+                f"old_amount={old_amount}; "
+                f"new_amount={corrected_amount}; "
+                f"reason={reason.strip()}"
+            ),
+        )
+
+        if corrected_amount == Decimal("0.00"):
+            st.success(
+                "Задължението е коригирано на 0,00 и вече няма сума за плащане."
+            )
+        elif corrected_amount > old_amount:
+            st.success(
+                f"Задължението е увеличено от "
+                f"{old_amount:.2f} на {corrected_amount:.2f}."
+            )
+        elif corrected_amount < old_amount:
+            st.success(
+                f"Задължението е намалено от "
+                f"{old_amount:.2f} на {corrected_amount:.2f}."
+            )
+        else:
+            st.info(
+                "Сумата не е променена, но основанието е записано."
+            )
+
+        rerun()
 def cashier_page(user):
     st.title("💳 Каса")
     apts=fetch_all("SELECT id,apartment_number,property_type,adult_residents,annual_fro FROM apartments WHERE active ORDER BY apartment_number")
@@ -126,6 +316,12 @@ def cashier_page(user):
     c1,c2,c3,c4=st.columns(4); c1.metric("Обект",apt["apartment_number"]); c2.metric("Пълнолетни",apt["adult_residents"]); c3.metric("Платено",fmt(paid)); c4.metric("Остава",fmt(due))
     st.subheader("Финансов картон")
     selected,total=apartment_ledger(apt["id"],year,True,f"ledger_{apt['id']}_{year}")
+    force_majeure_adjustment(
+        user=user,
+        apartment_id=apt["id"],
+        year=year,
+        rows=rows,
+    )
     st.divider(); c1,c2=st.columns([2,1]); c1.write(f"**Избрани позиции: {len(selected)}**"); c2.metric("Обща сума",fmt(total))
     note=st.text_input("Бележка / номер на платежно")
     b1,b2,b3=st.columns(3)
