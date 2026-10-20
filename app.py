@@ -165,7 +165,30 @@ def report_page(user):
     flow=[dict(x) for x in payments]+[dict(x) for x in expenses]; flow.sort(key=lambda x:x["дата"],reverse=True)
     st.dataframe(flow,use_container_width=True,hide_index=True)
     if flow:
-        out=io.BytesIO(); pd.DataFrame(flow).to_excel(out,index=False,engine="openpyxl"); st.download_button("Изтегли отчет",out.getvalue(),f"building_report_{date.today()}.xlsx")
+        export_df = pd.DataFrame(flow).copy()
+    
+        if "дата" in export_df.columns:
+            export_df["дата"] = pd.to_datetime(
+                export_df["дата"],
+                errors="coerce",
+                utc=True,
+            ).dt.tz_localize(None)
+    
+        out = io.BytesIO()
+    
+        export_df.to_excel(
+            out,
+            index=False,
+            engine="openpyxl",
+        )
+    
+        st.download_button(
+            "Изтегли отчет",
+            data=out.getvalue(),
+            file_name=f"building_report_{date.today()}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
 
 def expenses_page(user):
     st.title("Разходи")
