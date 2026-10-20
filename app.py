@@ -706,14 +706,8 @@ def admin_panel(user):
         st.subheader("История на форсмажорни корекции")
         adjustments=fetch_all("""SELECT oa.changed_at AS дата,a.apartment_number AS обект,o.year AS година,o.month AS месец,o.fee_type AS вид,oa.old_amount AS стара_сума,oa.new_amount AS нова_сума,oa.action AS действие,oa.reason AS основание FROM obligation_adjustments oa JOIN obligations o ON o.id=oa.obligation_id JOIN apartments a ON a.id=o.apartment_id ORDER BY oa.changed_at DESC LIMIT 200""")
         st.dataframe(adjustments,use_container_width=True,hide_index=True)
+    
     with tabs[5]:
-        with st.form("banner"):
-            title=st.text_input("Заглавие"); body=st.text_area("Текст"); image=st.file_uploader("Снимка",type=["png","jpg","jpeg","webp"]); publish=st.form_submit_button("Публикувай")
-        if publish and title:
-            data=mime=None
-            if image: im=Image.open(image).convert("RGB"); im.thumbnail((1600,700)); b=io.BytesIO(); im.save(b,"WEBP",quality=82); data=b.getvalue(); mime="image/webp"
-            execute("UPDATE announcements SET active=FALSE"); execute("INSERT INTO announcements(title,body,image_data,image_mime,active,created_by) VALUES(%s,%s,%s,%s,TRUE,%s)",(title,body,data,mime,user["id"])); rerun()
-    with tabs[6]:
         st.subheader("Исторически статус 2024–2026")
         st.info("Качи оригиналния Excel. Първият лист задава платените месеци и ФРО за 2025 и 2026. Задълженията за 2024 и началните каси са зададени по предоставения списък.")
         file=st.file_uploader("Excel файл",type=["xlsx"],key="history_excel")
@@ -724,14 +718,14 @@ def admin_panel(user):
             except Exception as exc: st.error(f"Миграцията не беше приложена: {exc}")
         base=fetch_one("SELECT * FROM balance_baseline ORDER BY applied_at DESC LIMIT 1")
         if base: st.success(f"Активно начално салдо: в брой {fmt(base['cash_amount'])}, банка {fmt(base['bank_amount'])}")
-    with tabs[7]:
+    with tabs[6]:
         rows=fetch_all("SELECT a.apartment_number,o.fee_type,o.year,o.month,o.amount,COALESCE(SUM(CASE WHEN p.status='confirmed' THEN pa.amount ELSE 0 END),0) paid FROM obligations o JOIN apartments a ON a.id=o.apartment_id LEFT JOIN payment_allocations pa ON pa.obligation_id=o.id LEFT JOIN payments p ON p.id=pa.payment_id GROUP BY a.apartment_number,o.id ORDER BY a.apartment_number,o.year,o.month")
         out=io.BytesIO(); pd.DataFrame(rows).to_excel(out,index=False,engine="openpyxl"); st.download_button("Изтегли общ отчет",out.getvalue(),"Building_Manager_Report.xlsx")
-    with tabs[8]: admin_technical_tab(user)
-    with tabs[9]: admin_announcements_tab(user)
-    with tabs[10]: admin_documents_tab(user)
-    with tabs[11]: admin_polls_tab(user)
-    with tabs[12]: parking_page()
+    with tabs[7]: admin_technical_tab(user)
+    with tabs[8]: admin_announcements_tab(user)
+    with tabs[9]: admin_documents_tab(user)
+    with tabs[10]: admin_polls_tab(user)
+    with tabs[11]: parking_page()
 
 user=current_user()
 if not user: login_page(); st.stop()
