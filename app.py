@@ -210,6 +210,14 @@ def initialize_database_schema():
     execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ")
     execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ")
     execute("CREATE INDEX IF NOT EXISTS idx_documents_archive ON documents(archived,is_deleted,created_at DESC)")
+    execute("ALTER TABLE poll_votes ADD COLUMN IF NOT EXISTS proof_type VARCHAR(20) NOT NULL DEFAULT 'none'")
+    execute("ALTER TABLE poll_votes ADD COLUMN IF NOT EXISTS video_name TEXT")
+    execute("ALTER TABLE poll_votes ADD COLUMN IF NOT EXISTS video_data BYTEA")
+    execute("ALTER TABLE poll_votes ADD COLUMN IF NOT EXISTS video_mime VARCHAR(100)")
+    execute("ALTER TABLE poll_votes ADD COLUMN IF NOT EXISTS paper_signed BOOLEAN NOT NULL DEFAULT FALSE")
+    execute("ALTER TABLE poll_votes ADD COLUMN IF NOT EXISTS paper_signed_at TIMESTAMPTZ")
+    execute("ALTER TABLE poll_votes ADD COLUMN IF NOT EXISTS paper_signed_by BIGINT REFERENCES users(id)")
+    execute("CREATE INDEX IF NOT EXISTS idx_poll_votes_proof ON poll_votes(poll_id,proof_type,paper_signed)")
     execute("CREATE INDEX IF NOT EXISTS idx_polls_period ON polls(starts_at,ends_at)")
     return True
 
@@ -560,6 +568,21 @@ def neighbor_archive(user):
 
 
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024
+MAX_VOTE_VIDEO_BYTES = 12 * 1024 * 1024
+
+
+def safe_vote_video(upload):
+    """Validate a short vote-confirmation video without re-encoding it."""
+    if not upload:
+        return None, None, None
+    data = upload.getvalue()
+    mime = upload.type or "application/octet-stream"
+    allowed = ("video/mp4", "video/webm", "video/quicktime")
+    if mime not in allowed:
+        raise ValueError("Разрешени са MP4, WEBM и MOV видео файлове.")
+    if len(data) > MAX_VOTE_VIDEO_BYTES:
+        raise ValueError("Видеото е по-голямо от 12 MB. Запишете кратък клип до 10 секунди.")
+    return upload.name, data, mime
 
 
 def safe_upload(upload, allowed_prefixes=None):
@@ -648,30 +671,90 @@ def documents_page():
 def voting_page(user):
     st.title("🗳️ Електронно гласуване")
     if not user.get("apartment_id"):
-        st.info("Профилът не е свързан с апартамент или обект."); return
+        st.info("Профилът не е свързан с апартамент или обект.")
+        return
+
     polls=fetch_all("SELECT * FROM polls WHERE active AND starts_at<=NOW() AND ends_at>=NOW() ORDER BY ends_at")
-    if not polls: st.info("Няма активно гласуване.")
+    if not polls:
+        st.info("Няма активно гласуване.")
+
     for poll in polls:
         with st.container(border=True):
-            st.subheader(poll["title"]); st.write(f"**{poll['question']}**"); st.write(poll["description"] or "")
+            st.subheader(poll["title"])
+            st.write(f"**{poll['question']}**")
+            st.write(poll["description"] or "")
             st.caption(f"Период: {poll['starts_at']:%d.%m.%Y %H:%M} – {poll['ends_at']:%d.%m.%Y %H:%M}")
+
             for att in fetch_all("SELECT * FROM poll_attachments WHERE poll_id=%s ORDER BY id",(poll["id"],)):
-                if att["is_image"]: st.image(bytes(att["file_data"]),width=600)
-                st.download_button(f"Изтегли {att['file_name']}",bytes(att["file_data"]),att["file_name"],att["file_mime"] or "application/octet-stream",key=f"poll_attachment_{att['id']}")
-            previous=fetch_one("SELECT option_id FROM poll_votes WHERE poll_id=%s AND apartment_id=%s",(poll["id"],user["apartment_id"]))
+                if att["is_image"]:
+                    st.image(bytes(att["file_data"]),width=600)
+                st.download_button(
+                    f"Изтегли {att['file_name']}",
+                    bytes(att["file_data"]),
+                    att["file_name"],
+                    att["file_mime"] or "application/octet-stream",
+                    key=f"poll_attachment_{att['id']}",
+                )
+
+            previous=fetch_one("""SELECT pv.option_id,pv.proof_type,pv.paper_signed,
+                (pv.video_data IS NOT NULL) AS has_video
+                FROM poll_votes pv WHERE pv.poll_id=%s AND pv.apartment_id=%s""",
+                (poll["id"],user["apartment_id"]))
             options=fetch_all("SELECT * FROM poll_options WHERE poll_id=%s ORDER BY sort_order,id",(poll["id"],))
             option_map={o["option_text"]:o["id"] for o in options}
+
             if previous:
                 chosen=next((o["option_text"] for o in options if o["id"]==previous["option_id"]),"")
-                st.success(f"Апартаментът вече е гласувал: {chosen}")
+                proof = "🎥 Видео" if previous.get("has_video") else "✍️ Хартиен подпис" if previous.get("paper_signed") else "Очаква доказателство"
+                st.success(f"Апартаментът вече е гласувал: {chosen} · {proof}")
             elif options:
                 choice=st.radio("Изберете отговор",list(option_map),key=f"poll_choice_{poll['id']}")
-                if st.button("Подай глас",key=f"poll_vote_{poll['id']}",type="primary"):
-                    try:
-                        execute("INSERT INTO poll_votes(poll_id,option_id,apartment_id,user_id) VALUES(%s,%s,%s,%s)",(poll["id"],option_map[choice],user["apartment_id"],user["id"]))
-                        audit(user["id"],"vote","poll",poll["id"],choice); st.success("Гласът е записан."); rerun()
-                    except Exception: st.warning("Този апартамент вече е гласувал.")
+                st.markdown("**Потвърждение на гласа**")
+                proof_choice=st.radio(
+                    "Изберете начин",
+                    ["Кратко видео", "Ще подпиша на хартия"],
+                    horizontal=True,
+                    key=f"poll_proof_{poll['id']}",
+                )
 
+                video=None
+                if proof_choice == "Кратко видео":
+                    st.caption("Запишете клип до 10 секунди, в който казвате номера на апартамента и избрания отговор.")
+                    video=st.file_uploader(
+                        "Запиши или избери видео",
+                        type=["mp4","webm","mov"],
+                        key=f"poll_video_{poll['id']}",
+                        help="На телефон бутонът позволява избор на заснет видеоклип според браузъра и устройството.",
+                    )
+                    if video:
+                        st.video(video.getvalue())
+                else:
+                    st.info("Гласът ще бъде записан, а домоуправителят ще отбележи подписа след подписване на хартиения списък.")
+
+                confirm=st.checkbox(
+                    f"Потвърждавам отговора „{choice}“ за този апартамент",
+                    key=f"poll_confirm_{poll['id']}",
+                )
+                disabled = not confirm or (proof_choice == "Кратко видео" and video is None)
+
+                if st.button("Потвърди и подай глас",key=f"poll_vote_{poll['id']}",type="primary",disabled=disabled):
+                    try:
+                        video_name=video_data=video_mime=None
+                        proof_type="paper_pending"
+                        if proof_choice == "Кратко видео":
+                            video_name,video_data,video_mime=safe_vote_video(video)
+                            proof_type="video"
+                        execute("""INSERT INTO poll_votes(
+                            poll_id,option_id,apartment_id,user_id,proof_type,video_name,video_data,video_mime
+                            ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)""",
+                            (poll["id"],option_map[choice],user["apartment_id"],user["id"],proof_type,video_name,video_data,video_mime))
+                        audit(user["id"],"vote","poll",poll["id"],f"{choice}; proof={proof_type}")
+                        st.success("Гласът е записан.")
+                        rerun()
+                    except ValueError as exc:
+                        st.error(str(exc))
+                    except Exception:
+                        st.warning("Този апартамент вече е гласувал или видеото не можа да бъде записано.")
 
 def admin_technical_tab(user):
     issues=fetch_all("""SELECT ti.*,a.apartment_number FROM technical_issues ti
@@ -797,7 +880,16 @@ def admin_polls_tab(user):
                         ELSE 'Гласувал'
                     END AS "Статус",
                     COALESCE(po.option_text, '') AS "Избран отговор",
-                    pv.created_at AS "Дата и час"
+                    pv.created_at AS "Дата и час",
+                    CASE
+                        WHEN pv.video_data IS NOT NULL THEN 'Видео'
+                        WHEN pv.paper_signed = TRUE THEN 'Хартиен подпис'
+                        WHEN pv.id IS NOT NULL THEN 'Очаква подпис'
+                        ELSE ''
+                    END AS "Подпис",
+                    pv.id AS "_vote_id",
+                    (pv.video_data IS NOT NULL) AS "_has_video",
+                    pv.paper_signed AS "_paper_signed"
                 FROM apartments a
                 LEFT JOIN poll_votes pv
                     ON pv.apartment_id = a.id
@@ -814,10 +906,37 @@ def admin_polls_tab(user):
                     a.apartment_number
             """, (poll["id"],))
 
+            st.markdown("#### Доказателства за гласуване")
+            voted_rows = [dict(row) for row in vote_details if row.get("_vote_id")]
+            if not voted_rows:
+                st.info("Все още няма подадени гласове.")
+            for vote_row in voted_rows:
+                with st.expander(
+                    f"Ап. {vote_row['Апартамент']} · {vote_row['Избран отговор']} · {vote_row['Подпис']}"
+                ):
+                    if vote_row.get("_has_video"):
+                        video_row=fetch_one("SELECT video_data,video_mime,video_name FROM poll_votes WHERE id=%s",(vote_row["_vote_id"],))
+                        if video_row and video_row.get("video_data"):
+                            st.video(bytes(video_row["video_data"]),format=video_row.get("video_mime") or "video/mp4")
+                    elif vote_row.get("_paper_signed"):
+                        st.success("Хартиеният подпис е отбелязан като получен.")
+                    else:
+                        st.warning("Очаква се хартиен подпис.")
+                        if st.button("✍️ Отбележи получен подпис",key=f"paper_sign_{poll['id']}_{vote_row['_vote_id']}"):
+                            execute("""UPDATE poll_votes SET proof_type='paper',paper_signed=TRUE,
+                                paper_signed_at=NOW(),paper_signed_by=%s WHERE id=%s""",(user["id"],vote_row["_vote_id"]))
+                            audit(user["id"],"confirm_paper_vote_signature","poll_vote",vote_row["_vote_id"],str(poll["id"]))
+                            rerun()
+
             vote_df = pd.DataFrame(
                 [dict(row) for row in vote_details]
             )
 
+            if not vote_df.empty:
+                vote_df = vote_df.drop(
+                    columns=["_vote_id", "_has_video", "_paper_signed"],
+                    errors="ignore",
+                )
             if not vote_df.empty and "Дата и час" in vote_df.columns:
                 vote_df["Дата и час"] = pd.to_datetime(
                     vote_df["Дата и час"],
