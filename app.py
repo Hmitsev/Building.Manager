@@ -441,6 +441,7 @@ def neighbor_main_navigation():
 
 def neighbor_page(user):
     st.title("Моите задължения")
+    st.caption("🔄 За по-добра визуализация на таблицата завъртете телефона хоризонтално.")
     if not user.get("apartment_id"): st.info("Профилът не е свързан с обект."); return
     default_year=YEARS.index(date.today().year) if date.today().year in YEARS else 0
     year=st.selectbox("Година",YEARS,index=default_year); apartment_ledger(user["apartment_id"],year,False)
