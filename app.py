@@ -33,7 +33,7 @@ div.stButton>button,div.stDownloadButton>button,a[data-testid="stLinkButton"]{co
 .status-partial{display:inline-block;padding:4px 10px;border-radius:999px;background:rgba(249,115,22,.16);color:#fb923c;font-weight:800;border:1px solid rgba(251,146,60,.3)}
 /* Централна клиентска навигация - стабилни native Streamlit бутони 2 по 2 */
 .st-key-neighbor_nav_area div[data-testid="stHorizontalBlock"]{display:flex!important;flex-direction:row!important;flex-wrap:nowrap!important;gap:8px!important;margin-bottom:8px!important}
-.st-key-neighbor_nav_area div[data-testid="column"]{flex:0 0 320px!important;max-width:320px!important;margin:auto!important}
+.st-key-neighbor_nav_area div[data-testid="column"]{flex:0 0 220px!important;max-width:220px!important;margin:auto!important}
 .st-key-neighbor_nav_area div[data-testid="stButton"]{width:100%!important;margin:0!important}
 .st-key-neighbor_nav_area div[data-testid="stButton"] > button{width:100%!important;min-height:44px!important;height:44px!important;padding:5px 6px!important;border-radius:12px!important;font-size:.82rem!important;font-weight:750!important;line-height:1.05!important;white-space:normal!important}
 .st-key-neighbor_nav_area div[data-testid="stButton"] > button[kind="secondary"]{background:linear-gradient(135deg,#2563eb,#0891b2)!important;border:1px solid rgba(125,211,252,.28)!important;color:#f8fafc!important;box-shadow:0 6px 14px rgba(37,99,235,.18)!important}
