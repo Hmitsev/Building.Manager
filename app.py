@@ -31,7 +31,7 @@ div.stButton>button,div.stDownloadButton>button,a[data-testid="stLinkButton"]{co
 .status-paid{display:inline-block;padding:4px 10px;border-radius:999px;background:rgba(34,197,94,.16);color:#4ade80;font-weight:800;border:1px solid rgba(74,222,128,.3)}
 .status-due{display:inline-block;padding:4px 10px;border-radius:999px;background:rgba(239,68,68,.16);color:#f87171;font-weight:800;border:1px solid rgba(248,113,113,.3)}
 .status-partial{display:inline-block;padding:4px 10px;border-radius:999px;background:rgba(249,115,22,.16);color:#fb923c;font-weight:800;border:1px solid rgba(251,146,60,.3)}
-/* Централна клиентска навигация - native Streamlit buttons in CSS grid */
+/* Централна клиентска навигация - native Streamlit buttons */
 .st-key-neighbor_nav_grid > div[data-testid="stVerticalBlock"],
 .st-key-neighbor_nav_grid div[data-testid="stVerticalBlockBorderWrapper"] > div[data-testid="stVerticalBlock"]{
     display:grid!important;
@@ -39,9 +39,7 @@ div.stButton>button,div.stDownloadButton>button,a[data-testid="stLinkButton"]{co
     gap:9px!important;
     align-items:stretch!important;
 }
-.st-key-neighbor_nav_grid div[data-testid="stButton"]{
-    margin:0!important;
-}
+.st-key-neighbor_nav_grid div[data-testid="stButton"]{margin:0!important}
 .st-key-neighbor_nav_grid div[data-testid="stButton"] > button{
     width:100%!important;
     min-height:44px!important;
@@ -357,13 +355,12 @@ def expenses_page(user):
         if save and amount>0: execute("INSERT INTO expenses(expense_date,category,amount,source,description,created_by) VALUES(%s,%s,%s,%s,%s,%s)",(d,cat,amount,"cash" if source=="В брой" else "bank",desc,user["id"])); rerun()
     rows=fetch_all("SELECT expense_date AS дата,category AS категория,amount AS сума,CASE source WHEN 'cash' THEN 'В брой' ELSE 'По банка' END AS начин,description AS описание FROM expenses ORDER BY expense_date DESC,id DESC")
     st.dataframe(rows,use_container_width=True,hide_index=True)
-
 def _set_neighbor_page(page_name):
     st.session_state.neighbor_page = page_name
 
 
 def neighbor_main_navigation():
-    """Native Streamlit buttons: no page reload and no loss of login session."""
+
     if "neighbor_page" not in st.session_state:
         st.session_state.neighbor_page = "Моите задължения"
 
@@ -380,18 +377,22 @@ def neighbor_main_navigation():
 
     st.markdown(
         '<div class="customer-nav-label">Бърз достъп</div>',
-        unsafe_allow_html=True,
+        unsafe_allow_html=True
     )
 
     with st.container(key="neighbor_nav_grid"):
+
         for page_name, label in nav_items:
+
             st.button(
                 label,
                 key=f"neighbor_nav_{page_name}",
-                type="primary" if st.session_state.neighbor_page == page_name else "secondary",
+                type="primary"
+                if st.session_state.neighbor_page == page_name
+                else "secondary",
                 use_container_width=True,
                 on_click=_set_neighbor_page,
-                args=(page_name,),
+                args=(page_name,)
             )
 
     st.divider()
@@ -815,7 +816,9 @@ def admin_panel(user):
     with tabs[11]: parking_page()
 
 user=current_user()
-if not user: login_page(); st.stop()
+if not user:
+    login_page()
+    st.stop()
 
 # За съседите всички секции са в централната навигация; вляво остава само Изход.
 if user["role"] == "neighbor":
@@ -823,34 +826,46 @@ if user["role"] == "neighbor":
         st.session_state.neighbor_page = "Моите задължения"
 
     with st.sidebar:
-        if st.button("Изход",use_container_width=True,key="neighbor_logout"):
+        if st.button("Изход", use_container_width=True, key="neighbor_logout"):
             logout_user()
-            st.session_state.pop("neighbor_page",None)
+            st.session_state.pop("neighbor_page", None)
             rerun()
 
     neighbor_main_navigation()
-    page=st.session_state.neighbor_page
-
+    page = st.session_state.neighbor_page
 else:
     # Навигацията на manager и cashier остава непроменена.
     with st.sidebar:
         st.title("🏢 Building.Manager")
         st.caption(f"{user['first_name']} {user['last_name']} | {user['role']}")
-        if user["role"]=="manager": pages=["Каса","Отчет","Разходи","Админ панел"]
-        else: pages=["Каса","Отчет","Разходи"]
-        page=st.radio("Навигация",pages)
-        if st.button("Изход",use_container_width=True,key="staff_logout"):
+        if user["role"] == "manager":
+            pages = ["Каса", "Отчет", "Разходи", "Админ панел"]
+        else:
+            pages = ["Каса", "Отчет", "Разходи"]
+        page = st.radio("Навигация", pages)
+        if st.button("Изход", use_container_width=True, key="staff_logout"):
             logout_user()
             rerun()
 
-if page=="Каса": cashier_page(user)
-elif page=="Отчет": report_page(user)
-elif page=="Разходи": expenses_page(user)
-elif page=="Моите задължения": neighbor_page(user)
-elif page=="Архив": neighbor_archive(user)
-elif page=="Технически проблем": technical_issues_page(user)
-elif page=="Обяви": announcements_page()
-elif page=="Документи": documents_page()
-elif page=="Електронно гласуване": voting_page(user)
-elif page=="Паркоместа": parking_page()
-elif page=="Админ панел": admin_panel(user)
+if page == "Каса":
+    cashier_page(user)
+elif page == "Отчет":
+    report_page(user)
+elif page == "Разходи":
+    expenses_page(user)
+elif page == "Моите задължения":
+    neighbor_page(user)
+elif page == "Архив":
+    neighbor_archive(user)
+elif page == "Технически проблем":
+    technical_issues_page(user)
+elif page == "Обяви":
+    announcements_page()
+elif page == "Документи":
+    documents_page()
+elif page == "Електронно гласуване":
+    voting_page(user)
+elif page == "Паркоместа":
+    parking_page()
+elif page == "Админ панел":
+    admin_panel(user)
