@@ -417,6 +417,73 @@ def report_page(user):
 
 def expenses_page(user):
     st.title("Разходи")
+    # Наличност каса за съседите
+
+    base = fetch_one("""
+        SELECT *
+        FROM balance_baseline
+        ORDER BY applied_at DESC
+        LIMIT 1
+    """)
+
+    if base:
+
+        cash_in = fetch_one("""
+            SELECT COALESCE(SUM(amount),0) total
+            FROM payments
+            WHERE status='confirmed'
+              AND payment_method='cash'
+              AND source_currency='EUR'
+              AND created_at > %s
+        """,(base["applied_at"],))["total"]
+
+        bank_in = fetch_one("""
+            SELECT COALESCE(SUM(amount),0) total
+            FROM payments
+            WHERE status='confirmed'
+              AND payment_method IN ('bank','card_softpos')
+              AND source_currency='EUR'
+              AND created_at > %s
+        """,(base["applied_at"],))["total"]
+
+        cash_out = fetch_one("""
+            SELECT COALESCE(SUM(amount),0) total
+            FROM expenses
+            WHERE source='cash'
+              AND created_at > %s
+        """,(base["applied_at"],))["total"]
+
+        bank_out = fetch_one("""
+            SELECT COALESCE(SUM(amount),0) total
+            FROM expenses
+            WHERE source='bank'
+              AND created_at > %s
+        """,(base["applied_at"],))["total"]
+
+        cash_balance = (
+            Decimal(base["cash_amount"])
+            + Decimal(cash_in)
+            - Decimal(cash_out)
+        )
+
+        bank_balance = (
+            Decimal(base["bank_amount"])
+            + Decimal(bank_in)
+            - Decimal(bank_out)
+        )
+
+        total_balance = cash_balance + bank_balance
+
+        st.metric(
+            "💶 Наличност Каса",
+            fmt(total_balance)
+        )
+
+        st.caption(
+            "Актуална наличност на етажната собственост."
+        )
+
+        st.divider()    
     if user["role"] in ("manager","cashier"):
         cats=[x["category"] for x in fetch_all("SELECT DISTINCT category FROM expenses ORDER BY category")]
         defaults=["Електроенергия","Асансьор","Почистване","Интернет","Банкови такси","Домоуправител","Касиер","Ремонт","Консумативи","Гараж","Други"]
