@@ -16,6 +16,11 @@ from database import init_db, fetch_all, fetch_one, execute
 from services import MONTHS, create_year_obligations, obligation_rows, create_payment, audit
 
 st.set_page_config(page_title=APP_NAME, page_icon="🏢", layout="wide", initial_sidebar_state="expanded")
+
+# PERFORMANCE SAFETY:
+# - schema initialization is cached per server process
+# - only the selected admin section is rendered
+# Business rules, payment allocation, historical import and audit logic stay unchanged.
 st.markdown("""
 <style>
 :root{--line:rgba(148,163,184,.16);--text:#f8fafc}.stApp{color:var(--text);background:radial-gradient(circle at 85% -10%,rgba(37,99,235,.18),transparent 30%),linear-gradient(180deg,#070b14,#09111f)}
@@ -125,7 +130,9 @@ div.stButton>button,div.stDownloadButton>button,a[data-testid="stLinkButton"]{co
 </style>
 """, unsafe_allow_html=True)
 
-try:
+@st.cache_resource(show_spinner=False)
+def initialize_database_schema():
+    """Prepare database schema once per Streamlit server process."""
     init_db()
     execute("""
         CREATE TABLE IF NOT EXISTS dashboard_baseline (
@@ -204,8 +211,14 @@ try:
     execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ")
     execute("CREATE INDEX IF NOT EXISTS idx_documents_archive ON documents(archived,is_deleted,created_at DESC)")
     execute("CREATE INDEX IF NOT EXISTS idx_polls_period ON polls(starts_at,ends_at)")
+    return True
+
+
+try:
+    initialize_database_schema()
 except Exception as exc:
-    st.error(str(exc)); st.stop()
+    st.error(str(exc))
+    st.stop()
 
 
 def fmt(v): return f"{Decimal(v or 0):,.2f} {CURRENCY}".replace(","," ")
@@ -403,7 +416,7 @@ def report_page(user):
         CASE p.status WHEN 'confirmed' THEN '🟢 Платено' WHEN 'pending' THEN '🔴 Неплатено / чака' ELSE '🔴 Отказано' END AS статус
         FROM payments p JOIN apartments a ON a.id=p.apartment_id WHERE p.created_at>%s""",(base["applied_at"],))
     expenses=fetch_all("""SELECT created_at AS дата,'Разход' AS поток,category AS обект,COALESCE(description,'') AS документ,
-        -amount AS сума,CASE source WHEN 'cash' THEN 'В брой' ELSE 'По банка' END AS начин,'Разход' AS статус
+        -amount AS сума,'EUR' AS валута,CASE source WHEN 'cash' THEN 'В брой' ELSE 'По банка' END AS начин,'Разход' AS статус
         FROM expenses WHERE created_at>%s""",(base["applied_at"],))
     flow=[dict(x) for x in payments]+[dict(x) for x in expenses]; flow.sort(key=lambda x:x["дата"],reverse=True)
     st.dataframe(flow,use_container_width=True,hide_index=True)
@@ -1004,8 +1017,19 @@ def apply_historical_snapshot(data,user_id):
 
 def admin_panel(user):
     st.title("Административен панел")
-    tabs=st.tabs(["Табло","Апартаменти","Регистрации","Роли","Плащания","Исторически статус","Експорт","Технически проблеми","Обяви","Документи","Гласувания","Паркоместа"])
-    with tabs[0]:
+    admin_sections = [
+        "Табло", "Апартаменти", "Регистрации", "Роли",
+        "Плащания", "Исторически статус", "Експорт",
+        "Технически проблеми", "Обяви", "Документи",
+        "Гласувания", "Паркоместа",
+    ]
+    admin_section = st.selectbox(
+        "Административен модул",
+        admin_sections,
+        key="admin_active_section",
+    )
+    st.divider()
+    if admin_section == "Табло":
         dashboard_base = fetch_one("""
             SELECT *
             FROM dashboard_baseline
@@ -1073,7 +1097,7 @@ def admin_panel(user):
             f"{fmt(dashboard_base['expense_amount'])} и към нея "
             "се добавят новите разходи след зануляването."
         )
-    with tabs[1]:
+    if admin_section == "Апартаменти":
         st.subheader("Добавяне на нов обект")
         with st.form("apt"):
             c1,c2,c3=st.columns(3); num=c1.text_input("Номер/обект"); typ=c2.selectbox("Тип",["Апартамент","Офис","Магазин","Гараж","Паркомясто"]); floor=c3.text_input("Етаж")
@@ -1107,18 +1131,18 @@ def admin_panel(user):
                 audit(user["id"],"update_apartment_financial_settings","apartment",current["id"],f"adults={new_adults};fro={new_fro};year={effective_year}")
                 st.success("Корекцията е записана. Обновени са само неплатените задължения."); rerun()
         st.dataframe(fetch_all("SELECT apartment_number AS обект,property_type AS тип,adult_residents AS лица,annual_fro AS ФРО,status AS статус FROM apartments ORDER BY apartment_number"),use_container_width=True,hide_index=True)
-    with tabs[2]:
+    if admin_section == "Регистрации":
         regs=fetch_all("SELECT u.id,u.first_name,u.last_name,u.email,a.apartment_number FROM users u LEFT JOIN apartments a ON a.id=u.apartment_id WHERE u.account_status='pending'")
         for x in regs:
             c1,c2,c3=st.columns([4,1,1]); c1.write(f"**{x['first_name']} {x['last_name']}** · ап. {x['apartment_number']} · {x['email']}")
             if c2.button("Одобри",key=f"ok{x['id']}"): execute("UPDATE users SET account_status='approved' WHERE id=%s",(x["id"],)); rerun()
             if c3.button("Откажи",key=f"no{x['id']}"): execute("UPDATE users SET account_status='rejected' WHERE id=%s",(x["id"],)); rerun()
-    with tabs[3]:
+    if admin_section == "Роли":
         users=fetch_all("SELECT id,first_name,last_name,email,role FROM users ORDER BY first_name,last_name")
         for x in users:
             c1,c2,c3=st.columns([4,2,1]); c1.write(f"**{x['first_name']} {x['last_name']}** · {x['email']}"); roles=["neighbor","cashier","manager"]; role=c2.selectbox("Роля",roles,index=roles.index(x["role"]) if x["role"] in roles else 0,key=f"role{x['id']}",label_visibility="collapsed")
             if c3.button("Запази",key=f"rs{x['id']}"): execute("UPDATE users SET role=%s,account_status='approved' WHERE id=%s",(role,x["id"])); audit(user["id"],"change_role","user",x["id"],role); rerun()
-    with tabs[4]:
+    if admin_section == "Плащания":
 
         st.subheader("Плащания")
     
@@ -1229,7 +1253,7 @@ def admin_panel(user):
             hide_index=True
         )
     
-    with tabs[5]:
+    if admin_section == "Исторически статус":
         st.subheader("Исторически статус 2024–2026")
         st.info("Качи оригиналния Excel. Първият лист задава платените месеци и ФРО за 2025 и 2026. Задълженията за 2024 и началните каси са зададени по предоставения списък.")
         file=st.file_uploader("Excel файл",type=["xlsx"],key="history_excel")
@@ -1240,14 +1264,14 @@ def admin_panel(user):
             except Exception as exc: st.error(f"Миграцията не беше приложена: {exc}")
         base=fetch_one("SELECT * FROM balance_baseline ORDER BY applied_at DESC LIMIT 1")
         if base: st.success(f"Активно начално салдо: в брой {fmt(base['cash_amount'])}, банка {fmt(base['bank_amount'])}")
-    with tabs[6]:
+    if admin_section == "Експорт":
         rows=fetch_all("SELECT a.apartment_number,o.fee_type,o.year,o.month,o.amount,COALESCE(SUM(CASE WHEN p.status='confirmed' THEN pa.amount ELSE 0 END),0) paid FROM obligations o JOIN apartments a ON a.id=o.apartment_id LEFT JOIN payment_allocations pa ON pa.obligation_id=o.id LEFT JOIN payments p ON p.id=pa.payment_id GROUP BY a.apartment_number,o.id ORDER BY a.apartment_number,o.year,o.month")
         out=io.BytesIO(); pd.DataFrame(rows).to_excel(out,index=False,engine="openpyxl"); st.download_button("Изтегли общ отчет",out.getvalue(),"Building_Manager_Report.xlsx")
-    with tabs[7]: admin_technical_tab(user)
-    with tabs[8]: admin_announcements_tab(user)
-    with tabs[9]: admin_documents_tab(user)
-    with tabs[10]: admin_polls_tab(user)
-    with tabs[11]: parking_page()
+    if admin_section == "Технически проблеми": admin_technical_tab(user)
+    if admin_section == "Обяви": admin_announcements_tab(user)
+    if admin_section == "Документи": admin_documents_tab(user)
+    if admin_section == "Гласувания": admin_polls_tab(user)
+    if admin_section == "Паркоместа": parking_page()
 
 user=current_user()
 if not user:
