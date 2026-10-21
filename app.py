@@ -2,7 +2,7 @@ import io
 import os
 from datetime import date, datetime, time
 from decimal import Decimal
-from urllib.parse import quote
+from urllib.parse import quote, quote_plus
 from pathlib import Path
 
 import pandas as pd
@@ -31,54 +31,61 @@ div.stButton>button,div.stDownloadButton>button,a[data-testid="stLinkButton"]{co
 .status-paid{display:inline-block;padding:4px 10px;border-radius:999px;background:rgba(34,197,94,.16);color:#4ade80;font-weight:800;border:1px solid rgba(74,222,128,.3)}
 .status-due{display:inline-block;padding:4px 10px;border-radius:999px;background:rgba(239,68,68,.16);color:#f87171;font-weight:800;border:1px solid rgba(248,113,113,.3)}
 .status-partial{display:inline-block;padding:4px 10px;border-radius:999px;background:rgba(249,115,22,.16);color:#fb923c;font-weight:800;border:1px solid rgba(251,146,60,.3)}
-/* Централна клиентска навигация */
-.st-key-neighbor_nav_grid div[data-testid="stButton"] > button{
-    min-height:42px!important;
-    height:42px!important;
-    padding:4px 7px!important;
-    border-radius:12px!important;
-    font-size:.82rem!important;
-    line-height:1.05!important;
-    white-space:normal!important;
+/* Централна клиентска навигация - независима от Streamlit columns */
+.neighbor-nav-grid{
+    display:grid;
+    grid-template-columns:repeat(4,minmax(0,1fr));
+    gap:9px;
+    width:100%;
+    margin:0 0 16px 0;
 }
-.st-key-neighbor_nav_grid div[data-testid="stButton"] > button[kind="secondary"]{
-    background:linear-gradient(135deg,#2563eb,#0891b2)!important;
-    border:1px solid rgba(125,211,252,.28)!important;
+.neighbor-nav-link{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    min-height:44px;
+    padding:6px 8px;
+    border-radius:12px;
     color:#f8fafc!important;
-    box-shadow:0 6px 14px rgba(37,99,235,.18)!important;
+    background:linear-gradient(135deg,#2563eb,#0891b2);
+    border:1px solid rgba(125,211,252,.28);
+    box-shadow:0 6px 14px rgba(37,99,235,.18);
+    font-size:.84rem;
+    font-weight:750;
+    line-height:1.05;
+    text-align:center;
+    text-decoration:none!important;
+    white-space:normal;
+    transition:filter .15s ease,transform .15s ease;
 }
-.st-key-neighbor_nav_grid div[data-testid="stButton"] > button[kind="primary"]{
-    background:linear-gradient(135deg,#0b2f6b,#0b4d70)!important;
-    border:1px solid rgba(96,165,250,.72)!important;
+.neighbor-nav-link:hover{
     color:#fff!important;
-    box-shadow:inset 0 0 0 1px rgba(255,255,255,.08),0 7px 16px rgba(2,132,199,.25)!important;
+    filter:brightness(1.10);
+    transform:translateY(-1px);
 }
-.st-key-neighbor_nav_grid div[data-testid="stButton"] > button[kind="primary"]:hover{
-    background:linear-gradient(135deg,#082653,#083b58)!important;
+.neighbor-nav-link.active{
+    background:linear-gradient(135deg,#082653,#083b58);
+    border-color:rgba(96,165,250,.82);
+    box-shadow:inset 0 0 0 1px rgba(255,255,255,.09),0 8px 18px rgba(2,132,199,.28);
 }
-.st-key-neighbor_nav_grid [data-testid="stHorizontalBlock"]{
-    gap:.45rem!important;
+.customer-nav-label{
+    margin:.15rem 0 .5rem;
+    color:#93c5fd;
+    font-size:.78rem;
+    font-weight:800;
+    letter-spacing:.09em;
+    text-transform:uppercase;
 }
-.customer-nav-label{margin:.15rem 0 .5rem;color:#93c5fd;font-size:.78rem;font-weight:800;letter-spacing:.09em;text-transform:uppercase}
-
 @media(max-width:768px){
-    .st-key-neighbor_nav_grid [data-testid="stHorizontalBlock"]{
-        display:flex!important;
-        flex-direction:row!important;
-        flex-wrap:wrap!important;
-        gap:.38rem!important;
+    .neighbor-nav-grid{
+        grid-template-columns:repeat(2,minmax(0,1fr))!important;
+        gap:7px!important;
     }
-    .st-key-neighbor_nav_grid [data-testid="column"]{
-        flex:0 0 calc(50% - .19rem)!important;
-        width:calc(50% - .19rem)!important;
-        min-width:0!important;
-    }
-    .st-key-neighbor_nav_grid div[data-testid="stButton"] > button{
-        min-height:40px!important;
-        height:40px!important;
-        padding:3px 4px!important;
-        font-size:.76rem!important;
-        border-radius:10px!important;
+    .neighbor-nav-link{
+        min-height:42px;
+        padding:5px 4px;
+        border-radius:10px;
+        font-size:.77rem;
     }
 }
 
@@ -361,7 +368,25 @@ def expenses_page(user):
     st.dataframe(rows,use_container_width=True,hide_index=True)
 
 def neighbor_main_navigation():
-    """Компактна централна навигация: 4+3 на компютър и 2 на ред на телефон."""
+    """HTML/CSS grid: 4 колони на компютър и гарантирано 2 на телефон."""
+    allowed_pages = {
+        "Моите задължения",
+        "Архив",
+        "Разходи",
+        "Технически проблем",
+        "Обяви",
+        "Документи",
+        "Електронно гласуване",
+        "Паркоместа",
+    }
+
+    requested_page = st.query_params.get("neighbor_page")
+    if isinstance(requested_page, list):
+        requested_page = requested_page[0] if requested_page else None
+
+    if requested_page in allowed_pages:
+        st.session_state.neighbor_page = requested_page
+
     if "neighbor_page" not in st.session_state:
         st.session_state.neighbor_page = "Моите задължения"
 
@@ -375,28 +400,21 @@ def neighbor_main_navigation():
         ("Паркоместа", "🅿️ Паркинг"),
     ]
 
-    with st.container(key="neighbor_nav_grid"):
-        st.markdown(
-            '<div class="customer-nav-label">Бърз достъп</div>',
-            unsafe_allow_html=True,
+    links = []
+    for page_name, label in nav_items:
+        active = " active" if st.session_state.neighbor_page == page_name else ""
+        href = "?neighbor_page=" + quote_plus(page_name)
+        links.append(
+            f'<a class="neighbor-nav-link{active}" href="{href}" target="_self">{label}</a>'
         )
 
-        for start, count in ((0, 4), (4, 3)):
-            cols = st.columns(count, gap="small")
-            for col, (page_name, label) in zip(
-                cols,
-                nav_items[start:start + count],
-            ):
-                is_active = st.session_state.neighbor_page == page_name
-                if col.button(
-                    label,
-                    key=f"neighbor_nav_{page_name}",
-                    type="primary" if is_active else "secondary",
-                    use_container_width=True,
-                ):
-                    st.session_state.neighbor_page = page_name
-                    st.rerun()
-
+    st.markdown(
+        '<div class="customer-nav-label">Бърз достъп</div>'
+        '<div class="neighbor-nav-grid">'
+        + "".join(links)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
     st.divider()
 
 def neighbor_page(user):
@@ -836,6 +854,8 @@ if user["role"] == "neighbor":
             key="neighbor_home_button",
         ):
             st.session_state.neighbor_page = "Моите задължения"
+            if "neighbor_page" in st.query_params:
+                del st.query_params["neighbor_page"]
             st.rerun()
 
         st.write("")
