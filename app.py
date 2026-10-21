@@ -31,6 +31,24 @@ div.stButton>button,div.stDownloadButton>button,a[data-testid="stLinkButton"]{co
 .status-paid{display:inline-block;padding:4px 10px;border-radius:999px;background:rgba(34,197,94,.16);color:#4ade80;font-weight:800;border:1px solid rgba(74,222,128,.3)}
 .status-due{display:inline-block;padding:4px 10px;border-radius:999px;background:rgba(239,68,68,.16);color:#f87171;font-weight:800;border:1px solid rgba(248,113,113,.3)}
 .status-partial{display:inline-block;padding:4px 10px;border-radius:999px;background:rgba(249,115,22,.16);color:#fb923c;font-weight:800;border:1px solid rgba(251,146,60,.3)}
+/* Централна клиентска навигация */
+div[data-testid="stButton"] > button[kind="secondary"]{
+    background:linear-gradient(135deg,#2563eb,#0891b2)!important;
+    border:1px solid rgba(125,211,252,.28)!important;
+    color:#f8fafc!important;
+    box-shadow:0 10px 24px rgba(37,99,235,.20)!important;
+}
+div[data-testid="stButton"] > button[kind="primary"]{
+    background:linear-gradient(135deg,#0b2f6b,#0b4d70)!important;
+    border:1px solid rgba(96,165,250,.72)!important;
+    color:#ffffff!important;
+    box-shadow:inset 0 0 0 1px rgba(255,255,255,.08),0 12px 28px rgba(2,132,199,.28)!important;
+}
+div[data-testid="stButton"] > button[kind="primary"]:hover{
+    background:linear-gradient(135deg,#082653,#083b58)!important;
+}
+.customer-nav-label{margin:.15rem 0 .6rem;color:#93c5fd;font-size:.82rem;font-weight:800;letter-spacing:.11em;text-transform:uppercase}
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -308,6 +326,40 @@ def expenses_page(user):
         if save and amount>0: execute("INSERT INTO expenses(expense_date,category,amount,source,description,created_by) VALUES(%s,%s,%s,%s,%s,%s)",(d,cat,amount,"cash" if source=="В брой" else "bank",desc,user["id"])); rerun()
     rows=fetch_all("SELECT expense_date AS дата,category AS категория,amount AS сума,CASE source WHEN 'cash' THEN 'В брой' ELSE 'По банка' END AS начин,description AS описание FROM expenses ORDER BY expense_date DESC,id DESC")
     st.dataframe(rows,use_container_width=True,hide_index=True)
+
+def neighbor_main_navigation():
+    """Централна бутонна навигация за съседския панел."""
+    if "neighbor_page" not in st.session_state:
+        st.session_state.neighbor_page = "Моите задължения"
+
+    st.markdown('<div class="customer-nav-label">Бърз достъп</div>', unsafe_allow_html=True)
+
+    nav_items = [
+        ("Архив", "🗂️ Архив"),
+        ("Разходи", "💶 Разходи"),
+        ("Технически проблем", "🛠️ Технически проблем"),
+        ("Обяви", "📢 Обяви"),
+        ("Документи", "📁 Документи"),
+        ("Електронно гласуване", "🗳️ Гласуване"),
+        ("Паркоместа", "🅿️ Паркоместа"),
+    ]
+
+    # Първи ред: 4 бутона. Втори ред: 3 бутона.
+    for start, count in ((0, 4), (4, 3)):
+        cols = st.columns(count)
+        for col, (page_name, label) in zip(cols, nav_items[start:start + count]):
+            is_active = st.session_state.neighbor_page == page_name
+            if col.button(
+                label,
+                key=f"neighbor_nav_{page_name}",
+                type="primary" if is_active else "secondary",
+                use_container_width=True,
+            ):
+                st.session_state.neighbor_page = page_name
+                st.rerun()
+
+    st.divider()
+
 
 def neighbor_page(user):
     st.title("Моите задължения")
@@ -729,13 +781,47 @@ def admin_panel(user):
 
 user=current_user()
 if not user: login_page(); st.stop()
-with st.sidebar:
-    st.title("🏢 Building.Manager"); st.caption(f"{user['first_name']} {user['last_name']} | {user['role']}")
-    if user["role"]=="manager": pages=["Каса","Отчет","Разходи","Админ панел"]
-    elif user["role"]=="cashier": pages=["Каса","Отчет","Разходи"]
-    else: pages=["Моите задължения","Архив","Разходи","Технически проблем","Обяви","Документи","Електронно гласуване","Паркоместа"]
-    page=st.radio("Навигация",pages)
-    if st.button("Изход",use_container_width=True): logout_user(); rerun()
+
+# За съседите страницата се управлява с централни бутони, а не с radio меню.
+if user["role"] == "neighbor":
+    if "neighbor_page" not in st.session_state:
+        st.session_state.neighbor_page = "Моите задължения"
+
+    with st.sidebar:
+        st.title("🏢 Building.Manager")
+        st.caption(f"{user['first_name']} {user['last_name']} | {user['role']}")
+
+        if st.button(
+            "🏠 Моите задължения",
+            type="primary" if st.session_state.neighbor_page == "Моите задължения" else "secondary",
+            use_container_width=True,
+            key="neighbor_home_button",
+        ):
+            st.session_state.neighbor_page = "Моите задължения"
+            st.rerun()
+
+        st.write("")
+        if st.button("Изход",use_container_width=True,key="neighbor_logout"):
+            logout_user()
+            st.session_state.pop("neighbor_page",None)
+            rerun()
+
+    # Бутоните се визуализират в централната зона над съдържанието.
+    neighbor_main_navigation()
+    page=st.session_state.neighbor_page
+
+else:
+    # Навигацията на manager и cashier остава непроменена.
+    with st.sidebar:
+        st.title("🏢 Building.Manager")
+        st.caption(f"{user['first_name']} {user['last_name']} | {user['role']}")
+        if user["role"]=="manager": pages=["Каса","Отчет","Разходи","Админ панел"]
+        else: pages=["Каса","Отчет","Разходи"]
+        page=st.radio("Навигация",pages)
+        if st.button("Изход",use_container_width=True,key="staff_logout"):
+            logout_user()
+            rerun()
+
 if page=="Каса": cashier_page(user)
 elif page=="Отчет": report_page(user)
 elif page=="Разходи": expenses_page(user)
