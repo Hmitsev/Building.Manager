@@ -1043,11 +1043,115 @@ def admin_panel(user):
             c1,c2,c3=st.columns([4,2,1]); c1.write(f"**{x['first_name']} {x['last_name']}** · {x['email']}"); roles=["neighbor","cashier","manager"]; role=c2.selectbox("Роля",roles,index=roles.index(x["role"]) if x["role"] in roles else 0,key=f"role{x['id']}",label_visibility="collapsed")
             if c3.button("Запази",key=f"rs{x['id']}"): execute("UPDATE users SET role=%s,account_status='approved' WHERE id=%s",(role,x["id"])); audit(user["id"],"change_role","user",x["id"],role); rerun()
     with tabs[4]:
-        rows=fetch_all("SELECT p.created_at AS дата,a.apartment_number AS обект,p.payment_number AS номер,p.amount AS сума,p.payment_method AS метод,p.status AS статус,p.provider_transaction_id AS референция FROM payments p JOIN apartments a ON a.id=p.apartment_id ORDER BY p.created_at DESC LIMIT 200")
-        st.dataframe([{**dict(x),"метод":method_bg(x["метод"]),"статус":payment_status_bg(x["статус"])} for x in rows],use_container_width=True,hide_index=True)
+
+        st.subheader("Плащания")
+    
+        rows = fetch_all("""
+            SELECT
+                p.id,
+                p.created_at AS дата,
+                a.apartment_number AS обект,
+                p.payment_number AS номер,
+                p.amount AS сума,
+                p.payment_method AS метод,
+                p.status AS статус,
+                p.provider_transaction_id AS референция
+            FROM payments p
+            JOIN apartments a ON a.id = p.apartment_id
+            ORDER BY p.created_at DESC
+            LIMIT 300
+        """)
+    
+        if not rows:
+            st.info("Няма плащания.")
+        else:
+    
+            for row in rows:
+    
+                c1, c2 = st.columns([10, 1])
+    
+                with c1:
+    
+                    st.markdown(
+                        f"""
+    **Обект:** {row['обект']} |
+    **Номер:** {row['номер']} |
+    **Сума:** {row['сума']} |
+    **Метод:** {method_bg(row['метод'])} |
+    **Статус:** {payment_status_bg(row['статус'])}
+    """
+                    )
+    
+                with c2:
+    
+                    if row["статус"] == "confirmed":
+    
+                        if st.button(
+                            "↩️ Отмени",
+                            key=f"undo_payment_{row['id']}"
+                        ):
+    
+                            execute(
+                                """
+                                DELETE FROM payment_allocations
+                                WHERE payment_id=%s
+                                """,
+                                (row["id"],)
+                            )
+    
+                            execute(
+                                """
+                                UPDATE payments
+                                SET status='cancelled'
+                                WHERE id=%s
+                                """,
+                                (row["id"],)
+                            )
+    
+                            audit(
+                                user["id"],
+                                "cancel_payment",
+                                "payment",
+                                row["id"],
+                                row["номер"]
+                            )
+    
+                            st.success(
+                                f"Плащането {row['номер']} е отменено."
+                            )
+                            st.warning(
+                                "Задължението е върнато автоматично към длъжника."
+                            )
+    
+                            rerun()
+    
+                st.divider()
+    
         st.subheader("История на форсмажорни корекции")
-        adjustments=fetch_all("""SELECT oa.changed_at AS дата,a.apartment_number AS обект,o.year AS година,o.month AS месец,o.fee_type AS вид,oa.old_amount AS стара_сума,oa.new_amount AS нова_сума,oa.action AS действие,oa.reason AS основание FROM obligation_adjustments oa JOIN obligations o ON o.id=oa.obligation_id JOIN apartments a ON a.id=o.apartment_id ORDER BY oa.changed_at DESC LIMIT 200""")
-        st.dataframe(adjustments,use_container_width=True,hide_index=True)
+    
+        adjustments = fetch_all("""
+            SELECT
+                oa.changed_at AS дата,
+                a.apartment_number AS обект,
+                o.year AS година,
+                o.month AS месец,
+                o.fee_type AS вид,
+                oa.old_amount AS стара_сума,
+                oa.new_amount AS нова_сума,
+                oa.action AS действие,
+                oa.reason AS основание
+            FROM obligation_adjustments oa
+            JOIN obligations o ON o.id = oa.obligation_id
+            JOIN apartments a ON a.id = o.apartment_id
+            ORDER BY oa.changed_at DESC
+            LIMIT 200
+        """)
+    
+        st.dataframe(
+            adjustments,
+            use_container_width=True,
+            hide_index=True
+        )
     
     with tabs[5]:
         st.subheader("Исторически статус 2024–2026")
