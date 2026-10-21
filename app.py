@@ -32,22 +32,55 @@ div.stButton>button,div.stDownloadButton>button,a[data-testid="stLinkButton"]{co
 .status-due{display:inline-block;padding:4px 10px;border-radius:999px;background:rgba(239,68,68,.16);color:#f87171;font-weight:800;border:1px solid rgba(248,113,113,.3)}
 .status-partial{display:inline-block;padding:4px 10px;border-radius:999px;background:rgba(249,115,22,.16);color:#fb923c;font-weight:800;border:1px solid rgba(251,146,60,.3)}
 /* Централна клиентска навигация */
-div[data-testid="stButton"] > button[kind="secondary"]{
+.st-key-neighbor_nav_grid div[data-testid="stButton"] > button{
+    min-height:42px!important;
+    height:42px!important;
+    padding:4px 7px!important;
+    border-radius:12px!important;
+    font-size:.82rem!important;
+    line-height:1.05!important;
+    white-space:normal!important;
+}
+.st-key-neighbor_nav_grid div[data-testid="stButton"] > button[kind="secondary"]{
     background:linear-gradient(135deg,#2563eb,#0891b2)!important;
     border:1px solid rgba(125,211,252,.28)!important;
     color:#f8fafc!important;
-    box-shadow:0 10px 24px rgba(37,99,235,.20)!important;
+    box-shadow:0 6px 14px rgba(37,99,235,.18)!important;
 }
-div[data-testid="stButton"] > button[kind="primary"]{
+.st-key-neighbor_nav_grid div[data-testid="stButton"] > button[kind="primary"]{
     background:linear-gradient(135deg,#0b2f6b,#0b4d70)!important;
     border:1px solid rgba(96,165,250,.72)!important;
-    color:#ffffff!important;
-    box-shadow:inset 0 0 0 1px rgba(255,255,255,.08),0 12px 28px rgba(2,132,199,.28)!important;
+    color:#fff!important;
+    box-shadow:inset 0 0 0 1px rgba(255,255,255,.08),0 7px 16px rgba(2,132,199,.25)!important;
 }
-div[data-testid="stButton"] > button[kind="primary"]:hover{
+.st-key-neighbor_nav_grid div[data-testid="stButton"] > button[kind="primary"]:hover{
     background:linear-gradient(135deg,#082653,#083b58)!important;
 }
-.customer-nav-label{margin:.15rem 0 .6rem;color:#93c5fd;font-size:.82rem;font-weight:800;letter-spacing:.11em;text-transform:uppercase}
+.st-key-neighbor_nav_grid [data-testid="stHorizontalBlock"]{
+    gap:.45rem!important;
+}
+.customer-nav-label{margin:.15rem 0 .5rem;color:#93c5fd;font-size:.78rem;font-weight:800;letter-spacing:.09em;text-transform:uppercase}
+
+@media(max-width:768px){
+    .st-key-neighbor_nav_grid [data-testid="stHorizontalBlock"]{
+        display:flex!important;
+        flex-direction:row!important;
+        flex-wrap:wrap!important;
+        gap:.38rem!important;
+    }
+    .st-key-neighbor_nav_grid [data-testid="column"]{
+        flex:0 0 calc(50% - .19rem)!important;
+        width:calc(50% - .19rem)!important;
+        min-width:0!important;
+    }
+    .st-key-neighbor_nav_grid div[data-testid="stButton"] > button{
+        min-height:40px!important;
+        height:40px!important;
+        padding:3px 4px!important;
+        font-size:.76rem!important;
+        border-radius:10px!important;
+    }
+}
 
 </style>
 """, unsafe_allow_html=True)
@@ -328,38 +361,43 @@ def expenses_page(user):
     st.dataframe(rows,use_container_width=True,hide_index=True)
 
 def neighbor_main_navigation():
-    """Централна бутонна навигация за съседския панел."""
+    """Компактна централна навигация: 4+3 на компютър и 2 на ред на телефон."""
     if "neighbor_page" not in st.session_state:
         st.session_state.neighbor_page = "Моите задължения"
-
-    st.markdown('<div class="customer-nav-label">Бърз достъп</div>', unsafe_allow_html=True)
 
     nav_items = [
         ("Архив", "🗂️ Архив"),
         ("Разходи", "💶 Разходи"),
-        ("Технически проблем", "🛠️ Технически проблем"),
+        ("Технически проблем", "🛠️ Проблем"),
         ("Обяви", "📢 Обяви"),
         ("Документи", "📁 Документи"),
-        ("Електронно гласуване", "🗳️ Гласуване"),
-        ("Паркоместа", "🅿️ Паркоместа"),
+        ("Електронно гласуване", "🗳️ Вот"),
+        ("Паркоместа", "🅿️ Паркинг"),
     ]
 
-    # Първи ред: 4 бутона. Втори ред: 3 бутона.
-    for start, count in ((0, 4), (4, 3)):
-        cols = st.columns(count)
-        for col, (page_name, label) in zip(cols, nav_items[start:start + count]):
-            is_active = st.session_state.neighbor_page == page_name
-            if col.button(
-                label,
-                key=f"neighbor_nav_{page_name}",
-                type="primary" if is_active else "secondary",
-                use_container_width=True,
+    with st.container(key="neighbor_nav_grid"):
+        st.markdown(
+            '<div class="customer-nav-label">Бърз достъп</div>',
+            unsafe_allow_html=True,
+        )
+
+        for start, count in ((0, 4), (4, 3)):
+            cols = st.columns(count, gap="small")
+            for col, (page_name, label) in zip(
+                cols,
+                nav_items[start:start + count],
             ):
-                st.session_state.neighbor_page = page_name
-                st.rerun()
+                is_active = st.session_state.neighbor_page == page_name
+                if col.button(
+                    label,
+                    key=f"neighbor_nav_{page_name}",
+                    type="primary" if is_active else "secondary",
+                    use_container_width=True,
+                ):
+                    st.session_state.neighbor_page = page_name
+                    st.rerun()
 
     st.divider()
-
 
 def neighbor_page(user):
     st.title("Моите задължения")
