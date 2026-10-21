@@ -33,6 +33,11 @@ div.stButton>button,div.stDownloadButton>button,a[data-testid="stLinkButton"]{co
 .status-partial{display:inline-block;padding:4px 10px;border-radius:999px;background:rgba(249,115,22,.16);color:#fb923c;font-weight:800;border:1px solid rgba(251,146,60,.3)}
 /* Централна клиентска навигация */
 div[data-testid="stButton"] > button[kind="secondary"]{
+    min-height:42px !important;
+    font-size:0.82rem !important;
+    padding:6px 8px !important;
+    border-radius:14px !important;
+}{
     background:linear-gradient(135deg,#2563eb,#0891b2)!important;
     border:1px solid rgba(125,211,252,.28)!important;
     color:#f8fafc!important;
