@@ -127,6 +127,23 @@ div.stButton>button,div.stDownloadButton>button,a[data-testid="stLinkButton"]{co
 
 try:
     init_db()
+    execute("""
+        CREATE TABLE IF NOT EXISTS dashboard_baseline (
+            id BIGSERIAL PRIMARY KEY,
+            expense_amount NUMERIC(14,2) NOT NULL DEFAULT 7000.00,
+            applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            applied_by BIGINT REFERENCES users(id),
+            note TEXT
+        )
+    """)
+
+    execute("""
+        INSERT INTO dashboard_baseline(expense_amount, applied_at, note)
+        SELECT 7000.00, NOW(), 'Начални разходи за текущата година'
+        WHERE NOT EXISTS (
+            SELECT 1 FROM dashboard_baseline
+        )
+    """)
     execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS provider VARCHAR(50)")
     execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS provider_transaction_id VARCHAR(150)")
     execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS external_status VARCHAR(40)")
@@ -682,6 +699,135 @@ def admin_polls_tab(user):
                 percent=(result["votes"]/total*100) if total else 0
                 st.write(f"**{result['option_text']}**: {result['votes']} гласа · {percent:.1f}%")
                 st.progress(percent/100 if percent else 0)
+            vote_details = fetch_all("""
+                SELECT
+                    a.apartment_number AS "Апартамент",
+                    a.property_type AS "Тип обект",
+                    CASE
+                        WHEN pv.id IS NULL THEN 'Не е гласувал'
+                        ELSE 'Гласувал'
+                    END AS "Статус",
+                    COALESCE(po.option_text, '') AS "Избран отговор",
+                    pv.created_at AS "Дата и час"
+                FROM apartments a
+                LEFT JOIN poll_votes pv
+                    ON pv.apartment_id = a.id
+                   AND pv.poll_id = %s
+                LEFT JOIN poll_options po
+                    ON po.id = pv.option_id
+                WHERE a.active = TRUE
+                ORDER BY
+                    CASE
+                        WHEN a.apartment_number ~ '^[0-9]+$'
+                        THEN a.apartment_number::INTEGER
+                        ELSE 999999
+                    END,
+                    a.apartment_number
+            """, (poll["id"],))
+
+            vote_df = pd.DataFrame(
+                [dict(row) for row in vote_details]
+            )
+
+            if not vote_df.empty and "Дата и час" in vote_df.columns:
+                vote_df["Дата и час"] = pd.to_datetime(
+                    vote_df["Дата и час"],
+                    errors="coerce",
+                    utc=True
+                ).dt.tz_localize(None)
+
+            summary_df = pd.DataFrame([
+                {
+                    "Заглавие": poll["title"],
+                    "Въпрос": poll["question"],
+                    "Начало": poll["starts_at"],
+                    "Край": poll["ends_at"],
+                    "Общо гласували": int(total),
+                    "Статус на анкетата": state,
+                }
+            ])
+
+            for column in ["Начало", "Край"]:
+                summary_df[column] = pd.to_datetime(
+                    summary_df[column],
+                    errors="coerce",
+                    utc=True
+                ).dt.tz_localize(None)
+
+            results_df = pd.DataFrame([
+                {
+                    "Отговор": result["option_text"],
+                    "Брой гласове": int(result["votes"]),
+                    "Процент": round(
+                        (result["votes"] / total * 100)
+                        if total else 0,
+                        2
+                    ),
+                }
+                for result in results
+            ])
+
+            poll_export = io.BytesIO()
+
+            with pd.ExcelWriter(
+                poll_export,
+                engine="openpyxl"
+            ) as writer:
+
+                summary_df.to_excel(
+                    writer,
+                    sheet_name="Информация",
+                    index=False
+                )
+
+                results_df.to_excel(
+                    writer,
+                    sheet_name="Резултати",
+                    index=False
+                )
+
+                vote_df.to_excel(
+                    writer,
+                    sheet_name="Апартаменти",
+                    index=False
+                )
+
+                for sheet_name in writer.sheets:
+                    worksheet = writer.sheets[sheet_name]
+                    worksheet.freeze_panes = "A2"
+
+                    for column_cells in worksheet.columns:
+                        max_length = 0
+                        column_letter = column_cells[0].column_letter
+
+                        for cell in column_cells:
+                            if cell.value is not None:
+                                max_length = max(
+                                    max_length,
+                                    len(str(cell.value))
+                                )
+
+                        worksheet.column_dimensions[
+                            column_letter
+                        ].width = min(max_length + 3, 45)
+
+            safe_poll_title = "".join(
+                char if char.isalnum() or char in ("-", "_")
+                else "_"
+                for char in poll["title"]
+            )
+
+            st.download_button(
+                "📥 Изтегли резултатите от анкетата",
+                data=poll_export.getvalue(),
+                file_name=f"poll_{poll['id']}_{safe_poll_title}.xlsx",
+                mime=(
+                    "application/vnd.openxmlformats-officedocument."
+                    "spreadsheetml.sheet"
+                ),
+                key=f"poll_export_{poll['id']}",
+                use_container_width=True,
+            )
             if st.button("Активирай/Деактивирай",key=f"poll_toggle_{poll['id']}"):
                 execute("UPDATE polls SET active=NOT active WHERE id=%s",(poll["id"],)); rerun()
 
@@ -784,8 +930,73 @@ def admin_panel(user):
     st.title("Административен панел")
     tabs=st.tabs(["Табло","Апартаменти","Регистрации","Роли","Плащания","Исторически статус","Експорт","Технически проблеми","Обяви","Документи","Гласувания","Паркоместа"])
     with tabs[0]:
-        s=fetch_one("SELECT (SELECT COUNT(*) FROM apartments WHERE active) a,(SELECT COUNT(*) FROM users WHERE account_status='pending') p,(SELECT COALESCE(SUM(amount),0) FROM payments WHERE status='confirmed') i,(SELECT COALESCE(SUM(amount),0) FROM expenses) e")
-        c1,c2,c3,c4=st.columns(4); c1.metric("Обекти",s["a"]); c2.metric("Чакащи",s["p"]); c3.metric("Постъпления",fmt(s["i"])); c4.metric("Разходи",fmt(s["e"]))
+        dashboard_base = fetch_one("""
+            SELECT *
+            FROM dashboard_baseline
+            ORDER BY applied_at DESC
+            LIMIT 1
+        """)
+
+        if not dashboard_base:
+            dashboard_base = {
+                "expense_amount": Decimal("7000.00"),
+                "applied_at": datetime.now(),
+            }
+
+        s = fetch_one("""
+            SELECT
+                (SELECT COUNT(*)
+                 FROM apartments
+                 WHERE active) AS a,
+
+                (SELECT COUNT(*)
+                 FROM users
+                 WHERE account_status = 'pending') AS p,
+
+                (SELECT COALESCE(SUM(amount), 0)
+                 FROM payments
+                 WHERE status = 'confirmed'
+                   AND source_currency = 'EUR') AS income,
+
+                (SELECT COALESCE(SUM(amount), 0)
+                 FROM expenses
+                 WHERE created_at > %s) AS new_expenses
+        """, (dashboard_base["applied_at"],))
+
+        total_income = Decimal(s["income"] or 0)
+
+        total_expenses = (
+            Decimal(dashboard_base["expense_amount"] or 0)
+            + Decimal(s["new_expenses"] or 0)
+        )
+
+        c1, c2, c3, c4 = st.columns(4)
+
+        c1.metric(
+            "Обекти",
+            s["a"]
+        )
+
+        c2.metric(
+            "Чакащи",
+            s["p"]
+        )
+
+        c3.metric(
+            "Постъпления",
+            fmt(total_income)
+        )
+
+        c4.metric(
+            "Разходи",
+            fmt(total_expenses)
+        )
+
+        st.caption(
+            "Разходите започват от начална стойност "
+            f"{fmt(dashboard_base['expense_amount'])} и към нея "
+            "се добавят новите разходи след зануляването."
+        )
     with tabs[1]:
         st.subheader("Добавяне на нов обект")
         with st.form("apt"):
