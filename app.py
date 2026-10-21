@@ -31,61 +31,52 @@ div.stButton>button,div.stDownloadButton>button,a[data-testid="stLinkButton"]{co
 .status-paid{display:inline-block;padding:4px 10px;border-radius:999px;background:rgba(34,197,94,.16);color:#4ade80;font-weight:800;border:1px solid rgba(74,222,128,.3)}
 .status-due{display:inline-block;padding:4px 10px;border-radius:999px;background:rgba(239,68,68,.16);color:#f87171;font-weight:800;border:1px solid rgba(248,113,113,.3)}
 .status-partial{display:inline-block;padding:4px 10px;border-radius:999px;background:rgba(249,115,22,.16);color:#fb923c;font-weight:800;border:1px solid rgba(251,146,60,.3)}
-/* Централна клиентска навигация - реална responsive grid */
-.neighbor-nav-grid{
-    display:grid;
-    grid-template-columns:repeat(4,minmax(0,1fr));
-    gap:9px;
-    width:100%;
-    margin:0 0 16px 0;
+/* Централна клиентска навигация - native Streamlit buttons in CSS grid */
+.st-key-neighbor_nav_grid > div[data-testid="stVerticalBlock"],
+.st-key-neighbor_nav_grid div[data-testid="stVerticalBlockBorderWrapper"] > div[data-testid="stVerticalBlock"]{
+    display:grid!important;
+    grid-template-columns:repeat(4,minmax(0,1fr))!important;
+    gap:9px!important;
+    align-items:stretch!important;
 }
-.neighbor-nav-link{
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    min-height:44px;
-    padding:6px 8px;
-    border-radius:12px;
+.st-key-neighbor_nav_grid div[data-testid="stButton"]{
+    margin:0!important;
+}
+.st-key-neighbor_nav_grid div[data-testid="stButton"] > button{
+    width:100%!important;
+    min-height:44px!important;
+    height:44px!important;
+    padding:5px 7px!important;
+    border-radius:12px!important;
+    font-size:.82rem!important;
+    line-height:1.05!important;
+    white-space:normal!important;
+}
+.st-key-neighbor_nav_grid div[data-testid="stButton"] > button[kind="secondary"]{
+    background:linear-gradient(135deg,#2563eb,#0891b2)!important;
+    border:1px solid rgba(125,211,252,.28)!important;
     color:#f8fafc!important;
-    background:linear-gradient(135deg,#2563eb,#0891b2);
-    border:1px solid rgba(125,211,252,.28);
-    box-shadow:0 6px 14px rgba(37,99,235,.18);
-    font-size:.84rem;
-    font-weight:750;
-    line-height:1.08;
-    text-align:center;
-    text-decoration:none!important;
-    white-space:normal;
-    transition:filter .15s ease,transform .15s ease;
+    box-shadow:0 6px 14px rgba(37,99,235,.18)!important;
 }
-.neighbor-nav-link:hover{
+.st-key-neighbor_nav_grid div[data-testid="stButton"] > button[kind="primary"]{
+    background:linear-gradient(135deg,#082653,#083b58)!important;
+    border:1px solid rgba(96,165,250,.82)!important;
     color:#fff!important;
-    filter:brightness(1.10);
-    transform:translateY(-1px);
+    box-shadow:inset 0 0 0 1px rgba(255,255,255,.09),0 8px 18px rgba(2,132,199,.28)!important;
 }
-.neighbor-nav-link.active{
-    background:linear-gradient(135deg,#082653,#083b58);
-    border-color:rgba(96,165,250,.82);
-    box-shadow:inset 0 0 0 1px rgba(255,255,255,.09),0 8px 18px rgba(2,132,199,.28);
-}
-.customer-nav-label{
-    margin:.15rem 0 .5rem;
-    color:#93c5fd;
-    font-size:.78rem;
-    font-weight:800;
-    letter-spacing:.09em;
-    text-transform:uppercase;
-}
+.customer-nav-label{margin:.15rem 0 .5rem;color:#93c5fd;font-size:.78rem;font-weight:800;letter-spacing:.09em;text-transform:uppercase}
 @media(max-width:768px){
-    .neighbor-nav-grid{
+    .st-key-neighbor_nav_grid > div[data-testid="stVerticalBlock"],
+    .st-key-neighbor_nav_grid div[data-testid="stVerticalBlockBorderWrapper"] > div[data-testid="stVerticalBlock"]{
         grid-template-columns:repeat(2,minmax(0,1fr))!important;
         gap:7px!important;
     }
-    .neighbor-nav-link{
-        min-height:42px;
-        padding:5px 4px;
-        border-radius:10px;
-        font-size:.77rem;
+    .st-key-neighbor_nav_grid div[data-testid="stButton"] > button{
+        min-height:42px!important;
+        height:42px!important;
+        padding:4px!important;
+        border-radius:10px!important;
+        font-size:.76rem!important;
     }
 }
 
@@ -366,12 +357,13 @@ def expenses_page(user):
         if save and amount>0: execute("INSERT INTO expenses(expense_date,category,amount,source,description,created_by) VALUES(%s,%s,%s,%s,%s,%s)",(d,cat,amount,"cash" if source=="В брой" else "bank",desc,user["id"])); rerun()
     rows=fetch_all("SELECT expense_date AS дата,category AS категория,amount AS сума,CASE source WHEN 'cash' THEN 'В брой' ELSE 'По банка' END AS начин,description AS описание FROM expenses ORDER BY expense_date DESC,id DESC")
     st.dataframe(rows,use_container_width=True,hide_index=True)
+
 def _set_neighbor_page(page_name):
     st.session_state.neighbor_page = page_name
 
 
 def neighbor_main_navigation():
-
+    """Native Streamlit buttons: no page reload and no loss of login session."""
     if "neighbor_page" not in st.session_state:
         st.session_state.neighbor_page = "Моите задължения"
 
@@ -388,22 +380,18 @@ def neighbor_main_navigation():
 
     st.markdown(
         '<div class="customer-nav-label">Бърз достъп</div>',
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
 
     with st.container(key="neighbor_nav_grid"):
-
         for page_name, label in nav_items:
-
             st.button(
                 label,
                 key=f"neighbor_nav_{page_name}",
-                type="primary"
-                if st.session_state.neighbor_page == page_name
-                else "secondary",
+                type="primary" if st.session_state.neighbor_page == page_name else "secondary",
                 use_container_width=True,
                 on_click=_set_neighbor_page,
-                args=(page_name,)
+                args=(page_name,),
             )
 
     st.divider()
@@ -829,7 +817,7 @@ def admin_panel(user):
 user=current_user()
 if not user: login_page(); st.stop()
 
-# За съседите всички секции са в централната grid навигация.
+# За съседите всички секции са в централната навигация; вляво остава само Изход.
 if user["role"] == "neighbor":
     if "neighbor_page" not in st.session_state:
         st.session_state.neighbor_page = "Моите задължения"
@@ -838,8 +826,6 @@ if user["role"] == "neighbor":
         if st.button("Изход",use_container_width=True,key="neighbor_logout"):
             logout_user()
             st.session_state.pop("neighbor_page",None)
-            if "neighbor_page" in st.query_params:
-                del st.query_params["neighbor_page"]
             rerun()
 
     neighbor_main_navigation()
@@ -848,18 +834,14 @@ if user["role"] == "neighbor":
 else:
     # Навигацията на manager и cashier остава непроменена.
     with st.sidebar:
-
-    if st.button(
-        "Изход",
-        use_container_width=True,
-        key="neighbor_logout"
-    ):
-        logout_user()
-        st.session_state.pop(
-            "neighbor_page",
-            None
-        )
-        rerun()
+        st.title("🏢 Building.Manager")
+        st.caption(f"{user['first_name']} {user['last_name']} | {user['role']}")
+        if user["role"]=="manager": pages=["Каса","Отчет","Разходи","Админ панел"]
+        else: pages=["Каса","Отчет","Разходи"]
+        page=st.radio("Навигация",pages)
+        if st.button("Изход",use_container_width=True,key="staff_logout"):
+            logout_user()
+            rerun()
 
 if page=="Каса": cashier_page(user)
 elif page=="Отчет": report_page(user)
