@@ -337,18 +337,27 @@ def neighbor_main_navigation():
     nav_items = [
         ("Архив", "🗂️ Архив"),
         ("Разходи", "💶 Разходи"),
-        ("Технически проблем", "🛠️ Технически проблем"),
+        ("Технически проблем", "🛠️ Проблем"),
         ("Обяви", "📢 Обяви"),
         ("Документи", "📁 Документи"),
-        ("Електронно гласуване", "🗳️ Гласуване"),
+        ("Електронно гласуване", "🗳️ Вот"),
         ("Паркоместа", "🅿️ Паркоместа"),
     ]
-
-    # Първи ред: 4 бутона. Втори ред: 3 бутона.
-    for start, count in ((0, 4), (4, 3)):
-        cols = st.columns(count)
-        for col, (page_name, label) in zip(cols, nav_items[start:start + count]):
-            is_active = st.session_state.neighbor_page == page_name
+    
+    for start in range(0, len(nav_items), 3):
+    
+        cols = st.columns(3)
+    
+        for col, (page_name, label) in zip(
+            cols,
+            nav_items[start:start + 3]
+        ):
+    
+            is_active = (
+                st.session_state.neighbor_page
+                == page_name
+            )
+    
             if col.button(
                 label,
                 key=f"neighbor_nav_{page_name}",
