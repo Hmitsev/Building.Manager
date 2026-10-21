@@ -31,7 +31,7 @@ div.stButton>button,div.stDownloadButton>button,a[data-testid="stLinkButton"]{co
 .status-paid{display:inline-block;padding:4px 10px;border-radius:999px;background:rgba(34,197,94,.16);color:#4ade80;font-weight:800;border:1px solid rgba(74,222,128,.3)}
 .status-due{display:inline-block;padding:4px 10px;border-radius:999px;background:rgba(239,68,68,.16);color:#f87171;font-weight:800;border:1px solid rgba(248,113,113,.3)}
 .status-partial{display:inline-block;padding:4px 10px;border-radius:999px;background:rgba(249,115,22,.16);color:#fb923c;font-weight:800;border:1px solid rgba(251,146,60,.3)}
-/* Централна клиентска навигация - независима от Streamlit columns */
+/* Централна клиентска навигация - реална responsive grid */
 .neighbor-nav-grid{
     display:grid;
     grid-template-columns:repeat(4,minmax(0,1fr));
@@ -52,7 +52,7 @@ div.stButton>button,div.stDownloadButton>button,a[data-testid="stLinkButton"]{co
     box-shadow:0 6px 14px rgba(37,99,235,.18);
     font-size:.84rem;
     font-weight:750;
-    line-height:1.05;
+    line-height:1.08;
     text-align:center;
     text-decoration:none!important;
     white-space:normal;
@@ -368,7 +368,7 @@ def expenses_page(user):
     st.dataframe(rows,use_container_width=True,hide_index=True)
 
 def neighbor_main_navigation():
-    """HTML/CSS grid: 4 колони на компютър и гарантирано 2 на телефон."""
+    """Централна навигация: 4 колони на компютър и точно 2 на телефон."""
     allowed_pages = {
         "Моите задължения",
         "Архив",
@@ -391,6 +391,7 @@ def neighbor_main_navigation():
         st.session_state.neighbor_page = "Моите задължения"
 
     nav_items = [
+        ("Моите задължения", "🏠 Задължения"),
         ("Архив", "🗂️ Архив"),
         ("Разходи", "💶 Разходи"),
         ("Технически проблем", "🛠️ Проблем"),
@@ -838,33 +839,19 @@ def admin_panel(user):
 user=current_user()
 if not user: login_page(); st.stop()
 
-# За съседите страницата се управлява с централни бутони, а не с radio меню.
+# За съседите всички секции са в централната grid навигация.
 if user["role"] == "neighbor":
     if "neighbor_page" not in st.session_state:
         st.session_state.neighbor_page = "Моите задължения"
 
     with st.sidebar:
-        st.title("🏢 Building.Manager")
-        st.caption(f"{user['first_name']} {user['last_name']} | {user['role']}")
-
-        if st.button(
-            "🏠 Моите задължения",
-            type="primary" if st.session_state.neighbor_page == "Моите задължения" else "secondary",
-            use_container_width=True,
-            key="neighbor_home_button",
-        ):
-            st.session_state.neighbor_page = "Моите задължения"
-            if "neighbor_page" in st.query_params:
-                del st.query_params["neighbor_page"]
-            st.rerun()
-
-        st.write("")
         if st.button("Изход",use_container_width=True,key="neighbor_logout"):
             logout_user()
             st.session_state.pop("neighbor_page",None)
+            if "neighbor_page" in st.query_params:
+                del st.query_params["neighbor_page"]
             rerun()
 
-    # Бутоните се визуализират в централната зона над съдържанието.
     neighbor_main_navigation()
     page=st.session_state.neighbor_page
 
