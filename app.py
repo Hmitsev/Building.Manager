@@ -33,11 +33,6 @@ div.stButton>button,div.stDownloadButton>button,a[data-testid="stLinkButton"]{co
 .status-partial{display:inline-block;padding:4px 10px;border-radius:999px;background:rgba(249,115,22,.16);color:#fb923c;font-weight:800;border:1px solid rgba(251,146,60,.3)}
 /* Централна клиентска навигация */
 div[data-testid="stButton"] > button[kind="secondary"]{
-    min-height:42px !important;
-    font-size:0.82rem !important;
-    padding:6px 8px !important;
-    border-radius:14px !important;}
-{
     background:linear-gradient(135deg,#2563eb,#0891b2)!important;
     border:1px solid rgba(125,211,252,.28)!important;
     color:#f8fafc!important;
@@ -342,27 +337,18 @@ def neighbor_main_navigation():
     nav_items = [
         ("Архив", "🗂️ Архив"),
         ("Разходи", "💶 Разходи"),
-        ("Технически проблем", "🛠️ Проблем"),
+        ("Технически проблем", "🛠️ Технически проблем"),
         ("Обяви", "📢 Обяви"),
         ("Документи", "📁 Документи"),
-        ("Електронно гласуване", "🗳️ Вот"),
+        ("Електронно гласуване", "🗳️ Гласуване"),
         ("Паркоместа", "🅿️ Паркоместа"),
     ]
-    
-    for start in range(0, len(nav_items), 3):
-    
-        cols = st.columns(3)
-    
-        for col, (page_name, label) in zip(
-            cols,
-            nav_items[start:start + 3]
-        ):
-    
-            is_active = (
-                st.session_state.neighbor_page
-                == page_name
-            )
-    
+
+    # Първи ред: 4 бутона. Втори ред: 3 бутона.
+    for start, count in ((0, 4), (4, 3)):
+        cols = st.columns(count)
+        for col, (page_name, label) in zip(cols, nav_items[start:start + count]):
+            is_active = st.session_state.neighbor_page == page_name
             if col.button(
                 label,
                 key=f"neighbor_nav_{page_name}",
