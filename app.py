@@ -254,8 +254,17 @@ def login_page():
 def payment_rows(apartment_id,year):
     create_year_obligations(apartment_id,int(year)); return obligation_rows(apartment_id,int(year))
 
-def apartment_ledger(apartment_id,year,editable=False,key="ledger"):
-    rows=payment_rows(apartment_id,year); data=[]
+def apartment_ledger(
+    apartment_id,
+    year,
+    editable=False,
+    key="ledger",
+    rows=None
+):
+    if rows is None:
+        rows = payment_rows(apartment_id, year)
+
+    data = []
     for r in rows:
         paid=Decimal(r["paid"]); left=max(Decimal("0"),Decimal(r["amount"])-paid)
         custom_status = str(r.get("custom_status") or "")
@@ -344,7 +353,7 @@ def cashier_page(user):
     rows=payment_rows(apt["id"],year); paid=sum(Decimal(x["paid"]) for x in rows); due=sum(max(Decimal("0"),Decimal(x["amount"])-Decimal(x["paid"])) for x in rows)
     c1,c2,c3,c4=st.columns(4); c1.metric("Обект",apt["apartment_number"]); c2.metric("Пълнолетни",apt["adult_residents"]); c3.metric("Платено",fmt(paid)); c4.metric("Остава",fmt(due))
     st.subheader("Финансов картон")
-    selected,total=apartment_ledger(apt["id"],year,True,f"ledger_{apt['id']}_{year}")
+    selected,total=apartment_ledger(apt["id"],year,True,f"ledger_{apt['id']}_{year}",rows=rows)
     force_majeure_adjustment(user,apt["id"],year,rows)
     currency=selected_currency_for_year(year)
     st.divider(); c1,c2=st.columns([2,1]); c1.write(f"**Избрани позиции: {len(selected)}**"); c2.metric("Обща сума",f"{total:,.2f} {currency}".replace(","," "))
@@ -1059,7 +1068,7 @@ def admin_panel(user):
             FROM payments p
             JOIN apartments a ON a.id = p.apartment_id
             ORDER BY p.created_at DESC
-            LIMIT 300
+            LIMIT 150
         """)
     
         if not rows:
