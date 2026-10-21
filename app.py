@@ -31,18 +31,95 @@ div.stButton>button,div.stDownloadButton>button,a[data-testid="stLinkButton"]{co
 .status-paid{display:inline-block;padding:4px 10px;border-radius:999px;background:rgba(34,197,94,.16);color:#4ade80;font-weight:800;border:1px solid rgba(74,222,128,.3)}
 .status-due{display:inline-block;padding:4px 10px;border-radius:999px;background:rgba(239,68,68,.16);color:#f87171;font-weight:800;border:1px solid rgba(248,113,113,.3)}
 .status-partial{display:inline-block;padding:4px 10px;border-radius:999px;background:rgba(249,115,22,.16);color:#fb923c;font-weight:800;border:1px solid rgba(251,146,60,.3)}
-/* Централна клиентска навигация - стабилни native Streamlit бутони 2 по 2 */
-.st-key-neighbor_nav_area div[data-testid="stHorizontalBlock"]{display:flex!important;flex-direction:row!important;flex-wrap:nowrap!important;gap:8px!important;margin-bottom:8px!important}
-.st-key-neighbor_nav_area div[data-testid="column"]{flex:0 0 70px!important;max-width:70px!important;margin:auto!important}
-.st-key-neighbor_nav_area div[data-testid="stButton"]{width:100%!important;margin:0!important}
-.st-key-neighbor_nav_area div[data-testid="stButton"] > button{width:100%!important;min-height:44px!important;height:44px!important;padding:5px 6px!important;border-radius:12px!important;font-size:.82rem!important;font-weight:750!important;line-height:1.05!important;white-space:normal!important}
-.st-key-neighbor_nav_area div[data-testid="stButton"] > button[kind="secondary"]{background:linear-gradient(135deg,#2563eb,#0891b2)!important;border:1px solid rgba(125,211,252,.28)!important;color:#f8fafc!important;box-shadow:0 6px 14px rgba(37,99,235,.18)!important}
-.st-key-neighbor_nav_area div[data-testid="stButton"] > button[kind="primary"]{background:linear-gradient(135deg,#082653,#083b58)!important;border:1px solid rgba(96,165,250,.82)!important;color:#fff!important;box-shadow:inset 0 0 0 1px rgba(255,255,255,.09),0 8px 18px rgba(2,132,199,.28)!important}
-.customer-nav-label{margin:.15rem 0 .5rem;color:#93c5fd;font-size:.78rem;font-weight:800;letter-spacing:.09em;text-transform:uppercase}
+/* Централна клиентска навигация - компактни бутони 2 по 2 */
+
+.st-key-neighbor_nav_area div[data-testid="stHorizontalBlock"]{
+    display:flex!important;
+    flex-direction:row!important;
+    justify-content:center!important;
+    flex-wrap:nowrap!important;
+    gap:12px!important;
+    margin-bottom:8px!important;
+}
+
+/* Ширина на всяка колона с бутон */
+.st-key-neighbor_nav_area div[data-testid="stColumn"]{
+    flex:0 0 320px!important;
+    width:320px!important;
+    max-width:320px!important;
+    min-width:0!important;
+}
+
+/* Контейнер на бутона */
+.st-key-neighbor_nav_area div[data-testid="stButton"]{
+    width:100%!important;
+    margin:0!important;
+}
+
+/* Самият бутон */
+.st-key-neighbor_nav_area div[data-testid="stButton"] > button{
+    width:100%!important;
+    min-height:40px!important;
+    height:40px!important;
+    padding:4px 10px!important;
+    border-radius:10px!important;
+    font-size:.78rem!important;
+    font-weight:750!important;
+    line-height:1!important;
+    white-space:normal!important;
+}
+
+.st-key-neighbor_nav_area div[data-testid="stButton"] > button[kind="secondary"]{
+    background:linear-gradient(135deg,#2563eb,#0891b2)!important;
+    border:1px solid rgba(125,211,252,.28)!important;
+    color:#f8fafc!important;
+    box-shadow:0 6px 14px rgba(37,99,235,.18)!important;
+}
+
+.st-key-neighbor_nav_area div[data-testid="stButton"] > button[kind="primary"]{
+    background:linear-gradient(135deg,#082653,#083b58)!important;
+    border:1px solid rgba(96,165,250,.82)!important;
+    color:#fff!important;
+    box-shadow:
+        inset 0 0 0 1px rgba(255,255,255,.09),
+        0 8px 18px rgba(2,132,199,.28)!important;
+}
+
+.customer-nav-label{
+    margin:.15rem 0 .5rem;
+    color:#93c5fd;
+    font-size:.78rem;
+    font-weight:800;
+    letter-spacing:.09em;
+    text-transform:uppercase;
+}
+
+/* Телефон */
 @media(max-width:768px){
-.st-key-neighbor_nav_area div[data-testid="stHorizontalBlock"]{display:flex!important;flex-direction:row!important;flex-wrap:nowrap!important;gap:6px!important;margin-bottom:6px!important}
-.st-key-neighbor_nav_area div[data-testid="column"]{flex:1 1 calc(50% - 3px)!important;width:calc(50% - 3px)!important;min-width:0!important}
-.st-key-neighbor_nav_area div[data-testid="stButton"] > button{min-height:42px!important;height:42px!important;padding:4px 3px!important;border-radius:10px!important;font-size:.75rem!important}
+
+    .st-key-neighbor_nav_area div[data-testid="stHorizontalBlock"]{
+        display:flex!important;
+        flex-direction:row!important;
+        justify-content:center!important;
+        flex-wrap:nowrap!important;
+        gap:6px!important;
+        margin-bottom:6px!important;
+    }
+
+    .st-key-neighbor_nav_area div[data-testid="stColumn"]{
+        flex:0 0 calc(50% - 3px)!important;
+        width:calc(50% - 3px)!important;
+        max-width:calc(50% - 3px)!important;
+        min-width:0!important;
+    }
+
+    .st-key-neighbor_nav_area div[data-testid="stButton"] > button{
+        min-height:38px!important;
+        height:38px!important;
+        padding:3px 4px!important;
+        border-radius:9px!important;
+        font-size:.72rem!important;
+    }
 }
 
 </style>
