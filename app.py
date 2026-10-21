@@ -2,7 +2,7 @@ import io
 import os
 from datetime import date, datetime, time
 from decimal import Decimal
-from urllib.parse import quote, quote_plus
+from urllib.parse import quote
 from pathlib import Path
 
 import pandas as pd
@@ -366,26 +366,11 @@ def expenses_page(user):
         if save and amount>0: execute("INSERT INTO expenses(expense_date,category,amount,source,description,created_by) VALUES(%s,%s,%s,%s,%s,%s)",(d,cat,amount,"cash" if source=="В брой" else "bank",desc,user["id"])); rerun()
     rows=fetch_all("SELECT expense_date AS дата,category AS категория,amount AS сума,CASE source WHEN 'cash' THEN 'В брой' ELSE 'По банка' END AS начин,description AS описание FROM expenses ORDER BY expense_date DESC,id DESC")
     st.dataframe(rows,use_container_width=True,hide_index=True)
+def _set_neighbor_page(page_name):
+    st.session_state.neighbor_page = page_name
+
 
 def neighbor_main_navigation():
-    """Централна навигация: 4 колони на компютър и точно 2 на телефон."""
-    allowed_pages = {
-        "Моите задължения",
-        "Архив",
-        "Разходи",
-        "Технически проблем",
-        "Обяви",
-        "Документи",
-        "Електронно гласуване",
-        "Паркоместа",
-    }
-
-    requested_page = st.query_params.get("neighbor_page")
-    if isinstance(requested_page, list):
-        requested_page = requested_page[0] if requested_page else None
-
-    if requested_page in allowed_pages:
-        st.session_state.neighbor_page = requested_page
 
     if "neighbor_page" not in st.session_state:
         st.session_state.neighbor_page = "Моите задължения"
@@ -401,21 +386,26 @@ def neighbor_main_navigation():
         ("Паркоместа", "🅿️ Паркинг"),
     ]
 
-    links = []
-    for page_name, label in nav_items:
-        active = " active" if st.session_state.neighbor_page == page_name else ""
-        href = "?neighbor_page=" + quote_plus(page_name)
-        links.append(
-            f'<a class="neighbor-nav-link{active}" href="{href}" target="_self">{label}</a>'
-        )
-
     st.markdown(
-        '<div class="customer-nav-label">Бърз достъп</div>'
-        '<div class="neighbor-nav-grid">'
-        + "".join(links)
-        + "</div>",
-        unsafe_allow_html=True,
+        '<div class="customer-nav-label">Бърз достъп</div>',
+        unsafe_allow_html=True
     )
+
+    with st.container(key="neighbor_nav_grid"):
+
+        for page_name, label in nav_items:
+
+            st.button(
+                label,
+                key=f"neighbor_nav_{page_name}",
+                type="primary"
+                if st.session_state.neighbor_page == page_name
+                else "secondary",
+                use_container_width=True,
+                on_click=_set_neighbor_page,
+                args=(page_name,)
+            )
+
     st.divider()
 
 def neighbor_page(user):
@@ -858,14 +848,18 @@ if user["role"] == "neighbor":
 else:
     # Навигацията на manager и cashier остава непроменена.
     with st.sidebar:
-        st.title("🏢 Building.Manager")
-        st.caption(f"{user['first_name']} {user['last_name']} | {user['role']}")
-        if user["role"]=="manager": pages=["Каса","Отчет","Разходи","Админ панел"]
-        else: pages=["Каса","Отчет","Разходи"]
-        page=st.radio("Навигация",pages)
-        if st.button("Изход",use_container_width=True,key="staff_logout"):
-            logout_user()
-            rerun()
+
+    if st.button(
+        "Изход",
+        use_container_width=True,
+        key="neighbor_logout"
+    ):
+        logout_user()
+        st.session_state.pop(
+            "neighbor_page",
+            None
+        )
+        rerun()
 
 if page=="Каса": cashier_page(user)
 elif page=="Отчет": report_page(user)
