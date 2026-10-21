@@ -31,51 +31,18 @@ div.stButton>button,div.stDownloadButton>button,a[data-testid="stLinkButton"]{co
 .status-paid{display:inline-block;padding:4px 10px;border-radius:999px;background:rgba(34,197,94,.16);color:#4ade80;font-weight:800;border:1px solid rgba(74,222,128,.3)}
 .status-due{display:inline-block;padding:4px 10px;border-radius:999px;background:rgba(239,68,68,.16);color:#f87171;font-weight:800;border:1px solid rgba(248,113,113,.3)}
 .status-partial{display:inline-block;padding:4px 10px;border-radius:999px;background:rgba(249,115,22,.16);color:#fb923c;font-weight:800;border:1px solid rgba(251,146,60,.3)}
-/* Централна клиентска навигация - native Streamlit buttons */
-.st-key-neighbor_nav_grid > div[data-testid="stVerticalBlock"],
-.st-key-neighbor_nav_grid div[data-testid="stVerticalBlockBorderWrapper"] > div[data-testid="stVerticalBlock"]{
-    display:grid!important;
-    grid-template-columns:repeat(4,minmax(0,1fr))!important;
-    gap:9px!important;
-    align-items:stretch!important;
-}
-.st-key-neighbor_nav_grid div[data-testid="stButton"]{margin:0!important}
-.st-key-neighbor_nav_grid div[data-testid="stButton"] > button{
-    width:100%!important;
-    min-height:44px!important;
-    height:44px!important;
-    padding:5px 7px!important;
-    border-radius:12px!important;
-    font-size:.82rem!important;
-    line-height:1.05!important;
-    white-space:normal!important;
-}
-.st-key-neighbor_nav_grid div[data-testid="stButton"] > button[kind="secondary"]{
-    background:linear-gradient(135deg,#2563eb,#0891b2)!important;
-    border:1px solid rgba(125,211,252,.28)!important;
-    color:#f8fafc!important;
-    box-shadow:0 6px 14px rgba(37,99,235,.18)!important;
-}
-.st-key-neighbor_nav_grid div[data-testid="stButton"] > button[kind="primary"]{
-    background:linear-gradient(135deg,#082653,#083b58)!important;
-    border:1px solid rgba(96,165,250,.82)!important;
-    color:#fff!important;
-    box-shadow:inset 0 0 0 1px rgba(255,255,255,.09),0 8px 18px rgba(2,132,199,.28)!important;
-}
+/* Централна клиентска навигация - стабилни native Streamlit бутони 2 по 2 */
+.st-key-neighbor_nav_area div[data-testid="stHorizontalBlock"]{display:flex!important;flex-direction:row!important;flex-wrap:nowrap!important;gap:8px!important;margin-bottom:8px!important}
+.st-key-neighbor_nav_area div[data-testid="column"]{flex:1 1 calc(50% - 4px)!important;width:calc(50% - 4px)!important;min-width:0!important}
+.st-key-neighbor_nav_area div[data-testid="stButton"]{width:100%!important;margin:0!important}
+.st-key-neighbor_nav_area div[data-testid="stButton"] > button{width:100%!important;min-height:44px!important;height:44px!important;padding:5px 6px!important;border-radius:12px!important;font-size:.82rem!important;font-weight:750!important;line-height:1.05!important;white-space:normal!important}
+.st-key-neighbor_nav_area div[data-testid="stButton"] > button[kind="secondary"]{background:linear-gradient(135deg,#2563eb,#0891b2)!important;border:1px solid rgba(125,211,252,.28)!important;color:#f8fafc!important;box-shadow:0 6px 14px rgba(37,99,235,.18)!important}
+.st-key-neighbor_nav_area div[data-testid="stButton"] > button[kind="primary"]{background:linear-gradient(135deg,#082653,#083b58)!important;border:1px solid rgba(96,165,250,.82)!important;color:#fff!important;box-shadow:inset 0 0 0 1px rgba(255,255,255,.09),0 8px 18px rgba(2,132,199,.28)!important}
 .customer-nav-label{margin:.15rem 0 .5rem;color:#93c5fd;font-size:.78rem;font-weight:800;letter-spacing:.09em;text-transform:uppercase}
 @media(max-width:768px){
-    .st-key-neighbor_nav_grid > div[data-testid="stVerticalBlock"],
-    .st-key-neighbor_nav_grid div[data-testid="stVerticalBlockBorderWrapper"] > div[data-testid="stVerticalBlock"]{
-        grid-template-columns:repeat(2,minmax(0,1fr))!important;
-        gap:7px!important;
-    }
-    .st-key-neighbor_nav_grid div[data-testid="stButton"] > button{
-        min-height:42px!important;
-        height:42px!important;
-        padding:4px!important;
-        border-radius:10px!important;
-        font-size:.76rem!important;
-    }
+.st-key-neighbor_nav_area div[data-testid="stHorizontalBlock"]{display:flex!important;flex-direction:row!important;flex-wrap:nowrap!important;gap:6px!important;margin-bottom:6px!important}
+.st-key-neighbor_nav_area div[data-testid="column"]{flex:1 1 calc(50% - 3px)!important;width:calc(50% - 3px)!important;min-width:0!important}
+.st-key-neighbor_nav_area div[data-testid="stButton"] > button{min-height:42px!important;height:42px!important;padding:4px 3px!important;border-radius:10px!important;font-size:.75rem!important}
 }
 
 </style>
@@ -360,7 +327,7 @@ def _set_neighbor_page(page_name):
 
 
 def neighbor_main_navigation():
-
+    """Точно два native Streamlit бутона на ред без URL презареждане."""
     if "neighbor_page" not in st.session_state:
         st.session_state.neighbor_page = "Моите задължения"
 
@@ -375,25 +342,23 @@ def neighbor_main_navigation():
         ("Паркоместа", "🅿️ Паркинг"),
     ]
 
-    st.markdown(
-        '<div class="customer-nav-label">Бърз достъп</div>',
-        unsafe_allow_html=True
-    )
+    st.markdown('<div class="customer-nav-label">Бърз достъп</div>', unsafe_allow_html=True)
 
-    with st.container(key="neighbor_nav_grid"):
-
-        for page_name, label in nav_items:
-
-            st.button(
-                label,
-                key=f"neighbor_nav_{page_name}",
-                type="primary"
-                if st.session_state.neighbor_page == page_name
-                else "secondary",
-                use_container_width=True,
-                on_click=_set_neighbor_page,
-                args=(page_name,)
-            )
+    with st.container(key="neighbor_nav_area"):
+        for row_start in range(0, len(nav_items), 2):
+            left, right = st.columns(2, gap="small")
+            pair = nav_items[row_start:row_start + 2]
+            for column, item in zip((left, right), pair):
+                page_name, label = item
+                with column:
+                    st.button(
+                        label,
+                        key=f"neighbor_nav_{page_name}",
+                        type="primary" if st.session_state.neighbor_page == page_name else "secondary",
+                        use_container_width=True,
+                        on_click=_set_neighbor_page,
+                        args=(page_name,),
+                    )
 
     st.divider()
 
@@ -820,52 +785,34 @@ if not user:
     login_page()
     st.stop()
 
-# За съседите всички секции са в централната навигация; вляво остава само Изход.
 if user["role"] == "neighbor":
     if "neighbor_page" not in st.session_state:
         st.session_state.neighbor_page = "Моите задължения"
-
     with st.sidebar:
         if st.button("Изход", use_container_width=True, key="neighbor_logout"):
             logout_user()
             st.session_state.pop("neighbor_page", None)
             rerun()
-
     neighbor_main_navigation()
     page = st.session_state.neighbor_page
 else:
-    # Навигацията на manager и cashier остава непроменена.
     with st.sidebar:
         st.title("🏢 Building.Manager")
         st.caption(f"{user['first_name']} {user['last_name']} | {user['role']}")
-        if user["role"] == "manager":
-            pages = ["Каса", "Отчет", "Разходи", "Админ панел"]
-        else:
-            pages = ["Каса", "Отчет", "Разходи"]
+        pages = ["Каса", "Отчет", "Разходи", "Админ панел"] if user["role"] == "manager" else ["Каса", "Отчет", "Разходи"]
         page = st.radio("Навигация", pages)
         if st.button("Изход", use_container_width=True, key="staff_logout"):
             logout_user()
             rerun()
 
-if page == "Каса":
-    cashier_page(user)
-elif page == "Отчет":
-    report_page(user)
-elif page == "Разходи":
-    expenses_page(user)
-elif page == "Моите задължения":
-    neighbor_page(user)
-elif page == "Архив":
-    neighbor_archive(user)
-elif page == "Технически проблем":
-    technical_issues_page(user)
-elif page == "Обяви":
-    announcements_page()
-elif page == "Документи":
-    documents_page()
-elif page == "Електронно гласуване":
-    voting_page(user)
-elif page == "Паркоместа":
-    parking_page()
-elif page == "Админ панел":
-    admin_panel(user)
+if page=="Каса": cashier_page(user)
+elif page=="Отчет": report_page(user)
+elif page=="Разходи": expenses_page(user)
+elif page=="Моите задължения": neighbor_page(user)
+elif page=="Архив": neighbor_archive(user)
+elif page=="Технически проблем": technical_issues_page(user)
+elif page=="Обяви": announcements_page()
+elif page=="Документи": documents_page()
+elif page=="Електронно гласуване": voting_page(user)
+elif page=="Паркоместа": parking_page()
+elif page=="Админ панел": admin_panel(user)
