@@ -36,8 +36,8 @@ div[data-testid="stButton"] > button[kind="secondary"]{
     min-height:42px !important;
     font-size:0.82rem !important;
     padding:6px 8px !important;
-    border-radius:14px !important;
-}{
+    border-radius:14px !important;}
+{
     background:linear-gradient(135deg,#2563eb,#0891b2)!important;
     border:1px solid rgba(125,211,252,.28)!important;
     color:#f8fafc!important;
