@@ -1303,7 +1303,7 @@ def admin_panel(user):
                 f"ФРО {current_fro:.2f} € / година"
             )
 
-            with st.form("edit_apartment_form"):
+            with st.form(f"edit_apartment_form_{current['id']}"):
                 ec1, ec2, ec3 = st.columns(3)
                 new_adults = ec1.number_input(
                     "Лица над 18 г.",
@@ -1340,7 +1340,8 @@ def admin_panel(user):
                 effective_year = st.selectbox(
                     "Преизчисли неплатените задължения за година",
                     YEARS,
-                    index=YEARS.index(date.today().year) if date.today().year in YEARS else 0
+                    index=YEARS.index(date.today().year) if date.today().year in YEARS else 0,
+                    key=f"edit_year_{current['id']}"
                 )
                 st.info(
                     "Ще бъдат променени само напълно неплатените такси вход и ФРО "
