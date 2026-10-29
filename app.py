@@ -1377,6 +1377,7 @@ def admin_panel(user):
                     WHERE o.apartment_id = %s
                       AND o.year = %s
                       AND o.fee_type = 'entrance'
+                      AND o.custom_status IS DISTINCT FROM 'force_majeure'
                       AND COALESCE(
                             (
                                 SELECT SUM(pa.amount)
