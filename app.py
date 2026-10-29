@@ -165,6 +165,7 @@ def initialize_database_schema():
     execute("ALTER TABLE obligations ADD COLUMN IF NOT EXISTS adjusted_at TIMESTAMPTZ")
     execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS source_currency VARCHAR(3) NOT NULL DEFAULT 'EUR'")
     execute("ALTER TABLE apartments ADD COLUMN IF NOT EXISTS monthly_entrance_fee NUMERIC(12,2)")
+    execute("ALTER TABLE apartments ADD COLUMN IF NOT EXISTS admin_note TEXT")
     execute("""CREATE TABLE IF NOT EXISTS obligation_adjustments (
         id BIGSERIAL PRIMARY KEY, obligation_id BIGINT NOT NULL REFERENCES obligations(id) ON DELETE CASCADE,
         old_amount NUMERIC(12,2) NOT NULL, new_amount NUMERIC(12,2) NOT NULL, action VARCHAR(30) NOT NULL,
@@ -1269,7 +1270,8 @@ def admin_panel(user):
                 property_type,
                 adult_residents,
                 monthly_entrance_fee,
-                annual_fro
+                annual_fro,
+                admin_note
             FROM apartments
             WHERE active
             ORDER BY apartment_number
@@ -1329,6 +1331,12 @@ def admin_panel(user):
                     format="%.2f",
                     key="edit_fro"
                 )
+                admin_note = st.text_input(
+                    "Коментар / бележка",
+                    value=str(current.get("admin_note") or ""),
+                    placeholder="Напр. Под наем / Собственик на ап. 2 и 3 / Необитаем",
+                    key="edit_admin_note"
+                )
                 effective_year = st.selectbox(
                     "Преизчисли неплатените задължения за година",
                     YEARS,
@@ -1351,9 +1359,16 @@ def admin_panel(user):
                     UPDATE apartments
                     SET adult_residents = %s,
                         monthly_entrance_fee = %s,
-                        annual_fro = %s
+                        annual_fro = %s,
+                        admin_note = %s
                     WHERE id = %s
-                """, (new_adults, entrance_fee, annual_fro, current["id"]))
+                """, (
+                    new_adults,
+                    entrance_fee,
+                    annual_fro,
+                    admin_note.strip(),
+                    current["id"]
+                ))
 
                 execute("""
                     INSERT INTO resident_history(
@@ -1437,7 +1452,8 @@ def admin_panel(user):
                         adult_residents * 6
                     ) AS "Месечна такса",
                     annual_fro AS "Годишен ФРО",
-                    status AS статус
+                    status AS статус,
+                    COALESCE(admin_note, '') AS коментар
                 FROM apartments
                 ORDER BY apartment_number
             """),
