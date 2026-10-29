@@ -1,5 +1,7 @@
 import io
 import os
+import smtplib
+from email.message import EmailMessage
 from datetime import date, datetime, time
 from decimal import Decimal
 from urllib.parse import quote
@@ -221,6 +223,7 @@ def initialize_database_schema():
     execute("ALTER TABLE poll_votes ADD COLUMN IF NOT EXISTS paper_signed_by BIGINT REFERENCES users(id)")
     execute("CREATE INDEX IF NOT EXISTS idx_poll_votes_proof ON poll_votes(poll_id,proof_type,paper_signed)")
     execute("CREATE INDEX IF NOT EXISTS idx_polls_period ON polls(starts_at,ends_at)")
+    execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS notifications_seen_at TIMESTAMPTZ")
     return True
 
 
@@ -229,6 +232,116 @@ try:
 except Exception as exc:
     st.error(str(exc))
     st.stop()
+
+
+ADMIN_NOTIFICATION_EMAIL = "et.sob.p.vladigerov.74@gmail.com"
+
+
+def send_admin_email(subject, body):
+    """Send an admin alert through SMTP configured in Render environment variables."""
+    smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com").strip()
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user = os.getenv("SMTP_USER", "").strip()
+    smtp_password = os.getenv("SMTP_PASSWORD", "").strip()
+    smtp_from = os.getenv("SMTP_FROM", smtp_user).strip()
+
+    if not smtp_user or not smtp_password or not smtp_from:
+        return False, "Email известието не е изпратено: липсват SMTP_USER/SMTP_PASSWORD в Render."
+
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = smtp_from
+    message["To"] = ADMIN_NOTIFICATION_EMAIL
+    message.set_content(body)
+
+    try:
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_password)
+            server.send_message(message)
+        return True, ""
+    except Exception as exc:
+        return False, f"Email известието не беше изпратено: {exc}"
+
+
+def queue_email_result(subject, body):
+    sent, error = send_admin_email(subject, body)
+    if not sent:
+        st.session_state["email_notification_warning"] = error
+
+
+def show_email_warning():
+    warning = st.session_state.pop("email_notification_warning", None)
+    if warning:
+        st.warning(warning)
+
+
+def neighbor_notification_items(user):
+    seen_at = fetch_one(
+        "SELECT notifications_seen_at FROM users WHERE id=%s",
+        (user["id"],)
+    )
+    seen_at = seen_at.get("notifications_seen_at") if seen_at else None
+
+    params = []
+    time_filter = ""
+    if seen_at:
+        time_filter = " AND created_at > %s"
+        params.append(seen_at)
+
+    announcements = fetch_all(f"""
+        SELECT id, 'announcement' AS kind, title, created_at
+        FROM announcements
+        WHERE active = TRUE
+          AND (starts_on IS NULL OR starts_on <= CURRENT_DATE)
+          AND (ends_on IS NULL OR ends_on >= CURRENT_DATE)
+          {time_filter}
+    """, tuple(params))
+
+    polls = fetch_all(f"""
+        SELECT id, 'poll' AS kind, title, created_at
+        FROM polls
+        WHERE active = TRUE
+          AND starts_at <= NOW()
+          AND ends_at >= NOW()
+          {time_filter}
+    """, tuple(params))
+
+    items = [dict(row) for row in announcements] + [dict(row) for row in polls]
+    items.sort(key=lambda row: row["created_at"], reverse=True)
+    return items
+
+
+def neighbor_notification_bell(user):
+    items = neighbor_notification_items(user)
+    label = f"🔔 {len(items)}" if items else "🔔"
+
+    with st.popover(label, use_container_width=False):
+        st.markdown("### Известия")
+        if not items:
+            st.caption("Няма нови обяви или гласувания.")
+        else:
+            for item in items:
+                icon = "📢" if item["kind"] == "announcement" else "🗳️"
+                section = "Обяви" if item["kind"] == "announcement" else "Електронно гласуване"
+                if st.button(
+                    f"{icon} {item['title']}",
+                    key=f"notification_{item['kind']}_{item['id']}",
+                    use_container_width=True
+                ):
+                    execute(
+                        "UPDATE users SET notifications_seen_at=NOW() WHERE id=%s",
+                        (user["id"],)
+                    )
+                    _set_neighbor_page(section)
+                    rerun()
+
+            if st.button("Маркирай всички като прочетени", key="mark_notifications_read", use_container_width=True):
+                execute(
+                    "UPDATE users SET notifications_seen_at=NOW() WHERE id=%s",
+                    (user["id"],)
+                )
+                rerun()
 
 
 def fmt(v): return f"{Decimal(v or 0):,.2f} {CURRENCY}".replace(","," ")
@@ -271,7 +384,12 @@ def login_page():
             if not amap or not all([first,last,email,pw]) or pw!=pw2 or len(pw)<8: st.error("Провери данните и паролата.")
             else:
                 try:
-                    execute("INSERT INTO users(email,password_hash,first_name,last_name,phone,role,apartment_id,account_status) VALUES(%s,%s,%s,%s,%s,'neighbor',%s,'pending')",(email,hash_password(pw),first,last,phone,amap[apt])); st.success("Регистрацията е изпратена.")
+                    execute("INSERT INTO users(email,password_hash,first_name,last_name,phone,role,apartment_id,account_status) VALUES(%s,%s,%s,%s,%s,'neighbor',%s,'pending')",(email,hash_password(pw),first,last,phone,amap[apt]))
+                    queue_email_result(
+                        f"Building.Manager: нова регистрация за обект {apt}",
+                        f"Нова регистрация очаква одобрение.\n\nИме: {first} {last}\nОбект: {apt}\nИмейл: {email}\nТелефон: {phone or '-'}"
+                    )
+                    st.success("Регистрацията е изпратена.")
                 except Exception: st.error("Имейлът вече е използван.")
 
 def payment_rows(apartment_id, year):
@@ -659,6 +777,12 @@ def technical_issues_page(user):
             except Exception as exc: st.error(str(exc)); return
             execute("""INSERT INTO technical_issues(apartment_id,created_by,title,description,category,image_name,image_data,image_mime)
                 VALUES(%s,%s,%s,%s,%s,%s,%s,%s)""",(user["apartment_id"],user["id"],title.strip(),description.strip(),category,name,data,mime))
+            apartment = fetch_one("SELECT apartment_number FROM apartments WHERE id=%s", (user["apartment_id"],))
+            apartment_number = apartment["apartment_number"] if apartment else str(user["apartment_id"])
+            queue_email_result(
+                f"Building.Manager: нов технически сигнал от обект {apartment_number}",
+                f"Подаден е нов технически сигнал.\n\nОбект: {apartment_number}\nКатегория: {category}\nЗаглавие: {title.strip()}\nОписание: {description.strip()}"
+            )
             audit(user["id"],"create_technical_issue","technical_issue",None,title.strip())
             st.success("Сигналът е изпратен."); rerun()
     st.subheader("Моите сигнали")
@@ -784,6 +908,12 @@ def voting_page(user):
                             poll_id,option_id,apartment_id,user_id,proof_type,video_name,video_data,video_mime
                             ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)""",
                             (poll["id"],option_map[choice],user["apartment_id"],user["id"],proof_type,video_name,video_data,video_mime))
+                        apartment = fetch_one("SELECT apartment_number FROM apartments WHERE id=%s", (user["apartment_id"],))
+                        apartment_number = apartment["apartment_number"] if apartment else str(user["apartment_id"])
+                        queue_email_result(
+                            f"Building.Manager: подаден глас от обект {apartment_number}",
+                            f"Подаден е нов глас.\n\nГласуване: {poll['title']}\nВъпрос: {poll['question']}\nОбект: {apartment_number}\nОтговор: {choice}\nПотвърждение: {proof_type}"
+                        )
                         audit(user["id"],"vote","poll",poll["id"],f"{choice}; proof={proof_type}")
                         st.success("Гласът е записан.")
                         rerun()
@@ -1606,7 +1736,10 @@ def admin_panel(user):
 user=current_user()
 if not user:
     login_page()
+    show_email_warning()
     st.stop()
+
+show_email_warning()
 
 if user["role"] == "neighbor":
     if "neighbor_page" not in st.session_state:
@@ -1616,6 +1749,9 @@ if user["role"] == "neighbor":
             logout_user()
             st.session_state.pop("neighbor_page", None)
             rerun()
+    top_col, spacer_col = st.columns([1, 9])
+    with top_col:
+        neighbor_notification_bell(user)
     neighbor_main_navigation()
     page = st.session_state.neighbor_page
 else:
