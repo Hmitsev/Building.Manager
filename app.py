@@ -1320,7 +1320,7 @@ def admin_panel(user):
                     value=float(current_entrance_fee),
                     step=0.01,
                     format="%.2f",
-                    key="edit_entrance_fee"
+                    key=f"edit_entrance_fee_{current['id']}"
                 )
                 new_fro = ec3.number_input(
                     "Годишен ФРО (€)",
@@ -1329,13 +1329,13 @@ def admin_panel(user):
                     value=float(current_fro),
                     step=0.01,
                     format="%.2f",
-                    key="edit_fro"
+                    key=f"edit_fro_{current['id']}"
                 )
                 admin_note = st.text_input(
                     "Коментар / бележка",
                     value=str(current.get("admin_note") or ""),
                     placeholder="Напр. Под наем / Собственик на ап. 2 и 3 / Необитаем",
-                    key="edit_admin_note"
+                    key=f"edit_admin_note_{current['id']}"
                 )
                 effective_year = st.selectbox(
                     "Преизчисли неплатените задължения за година",
