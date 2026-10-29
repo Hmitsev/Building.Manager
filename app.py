@@ -1,9 +1,5 @@
 import io
 import os
-import json
-import html
-import urllib.request
-import urllib.error
 from datetime import date, datetime, time
 from decimal import Decimal
 from urllib.parse import quote
@@ -225,9 +221,10 @@ def initialize_database_schema():
     execute("ALTER TABLE poll_votes ADD COLUMN IF NOT EXISTS paper_signed_by BIGINT REFERENCES users(id)")
     execute("CREATE INDEX IF NOT EXISTS idx_poll_votes_proof ON poll_votes(poll_id,proof_type,paper_signed)")
     execute("CREATE INDEX IF NOT EXISTS idx_polls_period ON polls(starts_at,ends_at)")
-    execute("""CREATE TABLE IF NOT EXISTS neighbor_notifications (
+    execute("""CREATE TABLE IF NOT EXISTS app_notifications (
         id BIGSERIAL PRIMARY KEY,
-        notification_type VARCHAR(30) NOT NULL,
+        audience VARCHAR(20) NOT NULL,
+        notification_type VARCHAR(40) NOT NULL,
         title VARCHAR(220) NOT NULL,
         message TEXT,
         target_page VARCHAR(80),
@@ -235,13 +232,13 @@ def initialize_database_schema():
         created_by BIGINT REFERENCES users(id),
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )""")
-    execute("""CREATE TABLE IF NOT EXISTS neighbor_notification_reads (
-        notification_id BIGINT NOT NULL REFERENCES neighbor_notifications(id) ON DELETE CASCADE,
+    execute("""CREATE TABLE IF NOT EXISTS app_notification_reads (
+        notification_id BIGINT NOT NULL REFERENCES app_notifications(id) ON DELETE CASCADE,
         user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         read_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        PRIMARY KEY(notification_id, user_id)
+        PRIMARY KEY(notification_id,user_id)
     )""")
-    execute("CREATE INDEX IF NOT EXISTS idx_neighbor_notifications_created ON neighbor_notifications(created_at DESC)")
+    execute("CREATE INDEX IF NOT EXISTS idx_app_notifications_audience ON app_notifications(audience,created_at DESC)")
     return True
 
 
@@ -252,111 +249,81 @@ except Exception as exc:
     st.stop()
 
 
-ADMIN_NOTIFICATION_EMAIL = "et.sob.p.vladigerov.74@gmail.com"
-
-
-def send_admin_email(subject, body_lines):
-    """Send an admin notification through the Resend HTTPS API."""
-    api_key = os.getenv("RESEND_API_KEY", "").strip()
-    from_email = os.getenv("RESEND_FROM_EMAIL", "").strip()
-    if not api_key or not from_email:
-        return False, "Липсват RESEND_API_KEY или RESEND_FROM_EMAIL."
-
-    safe_lines = [html.escape(str(line)) for line in body_lines if line is not None]
-    app_url = os.getenv("APP_PUBLIC_URL", "").strip()
-    html_body = "".join(f"<p>{line}</p>" for line in safe_lines)
-    if app_url:
-        safe_url = html.escape(app_url, quote=True)
-        html_body += f'<p><a href="{safe_url}">Отвори Building.Manager</a></p>'
-
-    payload = {
-        "from": from_email,
-        "to": [ADMIN_NOTIFICATION_EMAIL],
-        "subject": subject,
-        "html": html_body,
-    }
-    request = urllib.request.Request(
-        "https://api.resend.com/emails",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "User-Agent": "Building.Manager/1.0",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=12) as response:
-            result = json.loads(response.read().decode("utf-8"))
-            return True, result.get("id", "sent")
-    except urllib.error.HTTPError as exc:
-        details = exc.read().decode("utf-8", errors="replace")
-        return False, f"HTTP {exc.code}: {details[:500]}"
-    except Exception as exc:
-        return False, str(exc)
-
-
-def create_neighbor_notification(notification_type, title, message, target_page, source_id, created_by):
+def create_app_notification(audience, notification_type, title, message, target_page, source_id=None, created_by=None):
     return execute("""
-        INSERT INTO neighbor_notifications(
-            notification_type, title, message, target_page, source_id, created_by
-        ) VALUES(%s,%s,%s,%s,%s,%s)
+        INSERT INTO app_notifications(
+            audience,notification_type,title,message,target_page,source_id,created_by
+        ) VALUES(%s,%s,%s,%s,%s,%s,%s)
         RETURNING id
-    """, (notification_type, title, message, target_page, source_id, created_by), True)
+    """, (audience,notification_type,title,message,target_page,source_id,created_by), True)
 
 
-def neighbor_notification_bell(user):
+def notification_bell(user, audience):
     unread = fetch_one("""
         SELECT COUNT(*) AS count
-        FROM neighbor_notifications n
-        WHERE NOT EXISTS (
-            SELECT 1 FROM neighbor_notification_reads r
-            WHERE r.notification_id=n.id AND r.user_id=%s
-        )
-    """, (user["id"],))["count"]
+        FROM app_notifications n
+        WHERE n.audience=%s
+          AND NOT EXISTS (
+              SELECT 1 FROM app_notification_reads r
+              WHERE r.notification_id=n.id AND r.user_id=%s
+          )
+    """, (audience,user["id"]))["count"]
 
     label = f"🔔 {unread}" if unread else "🔔"
-    with st.popover(label, use_container_width=False):
-        st.markdown("### Известия")
+    with st.popover(label):
+        heading = "Административни известия" if audience == "admin" else "Известия"
+        st.markdown(f"### {heading}")
         notices = fetch_all("""
             SELECT n.*,
                    EXISTS(
-                       SELECT 1 FROM neighbor_notification_reads r
+                       SELECT 1 FROM app_notification_reads r
                        WHERE r.notification_id=n.id AND r.user_id=%s
                    ) AS is_read
-            FROM neighbor_notifications n
+            FROM app_notifications n
+            WHERE n.audience=%s
             ORDER BY n.created_at DESC
-            LIMIT 30
-        """, (user["id"],))
+            LIMIT 40
+        """, (user["id"],audience))
+
         if not notices:
             st.caption("Няма известия.")
+
+        icons = {
+            "registration":"👤", "technical_issue":"🛠️", "vote":"🗳️",
+            "announcement":"📢", "poll":"🗳️"
+        }
         for notice in notices:
-            icon = "📢" if notice["notification_type"] == "announcement" else "🗳️"
+            icon = icons.get(notice["notification_type"], "🔔")
             prefix = "" if notice["is_read"] else "🆕 "
             st.markdown(f"**{prefix}{icon} {notice['title']}**")
             if notice.get("message"):
                 st.caption(notice["message"])
             st.caption(notice["created_at"].strftime("%d.%m.%Y %H:%M"))
+
             if notice.get("target_page") and st.button(
-                "Отвори",
-                key=f"open_notice_{notice['id']}",
-                use_container_width=True,
+                "Отвори", key=f"notice_open_{audience}_{notice['id']}", use_container_width=True
             ):
                 execute("""
-                    INSERT INTO neighbor_notification_reads(notification_id,user_id)
+                    INSERT INTO app_notification_reads(notification_id,user_id)
                     VALUES(%s,%s)
                     ON CONFLICT(notification_id,user_id) DO UPDATE SET read_at=NOW()
-                """, (notice["id"], user["id"]))
-                st.session_state.neighbor_page = notice["target_page"]
+                """, (notice["id"],user["id"]))
+                if audience == "neighbor":
+                    st.session_state.neighbor_page = notice["target_page"]
+                else:
+                    st.session_state.pending_admin_section = notice["target_page"]
+                    st.session_state.pending_staff_page = "Админ панел"
                 rerun()
             st.divider()
-        if unread and st.button("Маркирай всички като прочетени", use_container_width=True):
+
+        if unread and st.button("Маркирай всички като прочетени", key=f"notice_read_all_{audience}", use_container_width=True):
             execute("""
-                INSERT INTO neighbor_notification_reads(notification_id,user_id)
-                SELECT n.id,%s FROM neighbor_notifications n
-                WHERE TRUE
+                INSERT INTO app_notification_reads(notification_id,user_id)
+                SELECT n.id,%s
+                FROM app_notifications n
+                WHERE n.audience=%s
                 ON CONFLICT(notification_id,user_id) DO UPDATE SET read_at=NOW()
-            """, (user["id"],))
+            """, (user["id"],audience))
             rerun()
 
 
@@ -400,19 +367,12 @@ def login_page():
             if not amap or not all([first,last,email,pw]) or pw!=pw2 or len(pw)<8: st.error("Провери данните и паролата.")
             else:
                 try:
-                    execute("INSERT INTO users(email,password_hash,first_name,last_name,phone,role,apartment_id,account_status) VALUES(%s,%s,%s,%s,%s,'neighbor',%s,'pending')",(email,hash_password(pw),first,last,phone,amap[apt]))
-                    sent, email_result = send_admin_email(
-                        f"Building.Manager: нова регистрация за обект {apt}",
-                        [
-                            f"Име: {first.strip()} {last.strip()}",
-                            f"Обект: {apt}",
-                            f"Имейл: {email}",
-                            f"Телефон: {phone or '-'}",
-                            "Регистрацията очаква одобрение в Админ панел → Регистрации.",
-                        ],
+                    new_user = execute("INSERT INTO users(email,password_hash,first_name,last_name,phone,role,apartment_id,account_status) VALUES(%s,%s,%s,%s,%s,'neighbor',%s,'pending') RETURNING id",(email,hash_password(pw),first,last,phone,amap[apt]),True)
+                    create_app_notification(
+                        "admin", "registration", f"Нова регистрация за обект {apt}",
+                        f"{first.strip()} {last.strip()} · {email}", "Регистрации",
+                        new_user["id"], new_user["id"]
                     )
-                    if not sent:
-                        print(f"Admin email failed for registration: {email_result}")
                     st.success("Регистрацията е изпратена.")
                 except Exception: st.error("Имейлът вече е използван.")
 
@@ -801,20 +761,11 @@ def technical_issues_page(user):
             except Exception as exc: st.error(str(exc)); return
             issue = execute("""INSERT INTO technical_issues(apartment_id,created_by,title,description,category,image_name,image_data,image_mime)
                 VALUES(%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",(user["apartment_id"],user["id"],title.strip(),description.strip(),category,name,data,mime),True)
-            apartment = fetch_one("SELECT apartment_number FROM apartments WHERE id=%s", (user["apartment_id"],))
-            sent, email_result = send_admin_email(
-                f"Building.Manager: нов технически сигнал от обект {apartment['apartment_number']}",
-                [
-                    f"Заглавие: {title.strip()}",
-                    f"Категория: {category}",
-                    f"Обект: {apartment['apartment_number']}",
-                    f"Подател: {user.get('first_name','')} {user.get('last_name','')}",
-                    f"Описание: {description.strip()}",
-                    "Сигналът е наличен в Админ панел → Технически проблеми.",
-                ],
+            apt_info = fetch_one("SELECT apartment_number FROM apartments WHERE id=%s",(user["apartment_id"],))
+            create_app_notification(
+                "admin", "technical_issue", f"Нов технически сигнал от ап. {apt_info['apartment_number']}",
+                f"{category} · {title.strip()}", "Технически проблеми", issue["id"], user["id"]
             )
-            if not sent:
-                audit(user["id"], "admin_email_failed", "technical_issue", issue["id"], email_result)
             audit(user["id"],"create_technical_issue","technical_issue",issue["id"],title.strip())
             st.success("Сигналът е изпратен."); rerun()
     st.subheader("Моите сигнали")
@@ -940,20 +891,11 @@ def voting_page(user):
                             poll_id,option_id,apartment_id,user_id,proof_type,video_name,video_data,video_mime
                             ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
                             (poll["id"],option_map[choice],user["apartment_id"],user["id"],proof_type,video_name,video_data,video_mime),True)
-                        apartment = fetch_one("SELECT apartment_number FROM apartments WHERE id=%s", (user["apartment_id"],))
-                        sent, email_result = send_admin_email(
-                            f"Building.Manager: нов глас от обект {apartment['apartment_number']}",
-                            [
-                                f"Гласуване: {poll['title']}",
-                                f"Въпрос: {poll['question']}",
-                                f"Обект: {apartment['apartment_number']}",
-                                f"Избран отговор: {choice}",
-                                f"Доказателство: {proof_type}",
-                                "Резултатът е наличен в Админ панел → Гласувания.",
-                            ],
+                        apt_info = fetch_one("SELECT apartment_number FROM apartments WHERE id=%s",(user["apartment_id"],))
+                        create_app_notification(
+                            "admin", "vote", f"Нов глас от ап. {apt_info['apartment_number']}",
+                            f"{poll['title']} · Отговор: {choice}", "Гласувания", vote["id"], user["id"]
                         )
-                        if not sent:
-                            audit(user["id"], "admin_email_failed", "poll_vote", vote["id"], email_result)
                         audit(user["id"],"vote","poll",poll["id"],f"{choice}; proof={proof_type}")
                         st.success("Гласът е записан.")
                         rerun()
@@ -998,9 +940,9 @@ def admin_announcements_tab(user):
             announcement = execute("""INSERT INTO announcements(title,body,image_data,image_mime,file_name,file_data,file_mime,active,starts_on,created_by)
                 VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",(title.strip(),body,image_data,image_mime,file_name,file_data,file_mime,active,published,user["id"]),True)
             if active:
-                create_neighbor_notification(
-                    "announcement", title.strip(), body or "Нова обява", "Обяви",
-                    announcement["id"], user["id"]
+                create_app_notification(
+                    "neighbor", "announcement", title.strip(), body or "Нова обява",
+                    "Обяви", announcement["id"], user["id"]
                 )
             audit(user["id"],"create_announcement","announcement",announcement["id"],title.strip()); rerun()
     st.subheader("Всички обяви")
@@ -1065,9 +1007,9 @@ def admin_polls_tab(user):
             for order,option in enumerate(options): execute("INSERT INTO poll_options(poll_id,option_text,sort_order) VALUES(%s,%s,%s)",(poll["id"],option,order))
             for name,data,mime in attachments:
                 execute("INSERT INTO poll_attachments(poll_id,file_name,file_data,file_mime,is_image) VALUES(%s,%s,%s,%s,%s)",(poll["id"],name,data,mime,bool(mime and mime.startswith("image/"))))
-            create_neighbor_notification(
-                "poll", title.strip(), question.strip(), "Електронно гласуване",
-                poll["id"], user["id"]
+            create_app_notification(
+                "neighbor", "poll", title.strip(), question.strip(),
+                "Електронно гласуване", poll["id"], user["id"]
             )
             audit(user["id"],"create_poll","poll",poll["id"],title.strip()); rerun()
     st.subheader("Гласувания и резултати")
@@ -1596,7 +1538,6 @@ def admin_panel(user):
                           AND o.year = %s
                           AND o.month = %s
                           AND o.fee_type = 'fro'
-                          AND o.custom_status IS DISTINCT FROM 'force_majeure'
                           AND COALESCE(
                                 (
                                     SELECT SUM(pa.amount)
@@ -1798,7 +1739,7 @@ if user["role"] == "neighbor":
             rerun()
     bell_col, _ = st.columns([1, 11])
     with bell_col:
-        neighbor_notification_bell(user)
+        notification_bell(user, "neighbor")
     neighbor_main_navigation()
     page = st.session_state.neighbor_page
 else:
@@ -1806,7 +1747,17 @@ else:
         st.title("🏢 Building.Manager")
         st.caption(f"{user['first_name']} {user['last_name']} | {user['role']}")
         pages = ["Каса", "Отчет", "Разходи", "Админ панел"] if user["role"] == "manager" else ["Каса", "Отчет", "Разходи"]
-        page = st.radio("Навигация", pages)
+        pending_page = st.session_state.pop("pending_staff_page", None)
+        if pending_page in pages:
+            st.session_state.staff_page = pending_page
+        pending_section = st.session_state.pop("pending_admin_section", None)
+        if pending_section:
+            st.session_state.admin_active_section = pending_section
+        if "staff_page" not in st.session_state or st.session_state.staff_page not in pages:
+            st.session_state.staff_page = pages[0]
+        page = st.radio("Навигация", pages, key="staff_page")
+        if user["role"] == "manager":
+            notification_bell(user, "admin")
         if st.button("Изход", use_container_width=True, key="staff_logout"):
             logout_user()
             rerun()
