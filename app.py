@@ -164,6 +164,7 @@ def initialize_database_schema():
     execute("ALTER TABLE obligations ADD COLUMN IF NOT EXISTS adjusted_by BIGINT REFERENCES users(id)")
     execute("ALTER TABLE obligations ADD COLUMN IF NOT EXISTS adjusted_at TIMESTAMPTZ")
     execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS source_currency VARCHAR(3) NOT NULL DEFAULT 'EUR'")
+    execute("ALTER TABLE apartments ADD COLUMN IF NOT EXISTS monthly_entrance_fee NUMERIC(12,2)")
     execute("""CREATE TABLE IF NOT EXISTS obligation_adjustments (
         id BIGSERIAL PRIMARY KEY, obligation_id BIGINT NOT NULL REFERENCES obligations(id) ON DELETE CASCADE,
         old_amount NUMERIC(12,2) NOT NULL, new_amount NUMERIC(12,2) NOT NULL, action VARCHAR(30) NOT NULL,
@@ -272,8 +273,41 @@ def login_page():
                     execute("INSERT INTO users(email,password_hash,first_name,last_name,phone,role,apartment_id,account_status) VALUES(%s,%s,%s,%s,%s,'neighbor',%s,'pending')",(email,hash_password(pw),first,last,phone,amap[apt])); st.success("Регистрацията е изпратена.")
                 except Exception: st.error("Имейлът вече е използван.")
 
-def payment_rows(apartment_id,year):
-    create_year_obligations(apartment_id,int(year)); return obligation_rows(apartment_id,int(year))
+def payment_rows(apartment_id, year):
+    create_year_obligations(apartment_id, int(year))
+
+    apartment = fetch_one("""
+        SELECT adult_residents, monthly_entrance_fee
+        FROM apartments
+        WHERE id = %s
+    """, (apartment_id,))
+
+    if apartment:
+        entrance_fee = (
+            Decimal(apartment["monthly_entrance_fee"])
+            if apartment.get("monthly_entrance_fee") is not None
+            else Decimal(apartment["adult_residents"] or 0) * Decimal("6.00")
+        )
+
+        execute("""
+            UPDATE obligations o
+            SET amount = %s
+            WHERE o.apartment_id = %s
+              AND o.year = %s
+              AND o.fee_type = 'entrance'
+              AND COALESCE(
+                    (
+                        SELECT SUM(pa.amount)
+                        FROM payment_allocations pa
+                        JOIN payments p ON p.id = pa.payment_id
+                        WHERE pa.obligation_id = o.id
+                          AND p.status = 'confirmed'
+                    ),
+                    0
+                  ) = 0
+        """, (entrance_fee, apartment_id, int(year)))
+
+    return obligation_rows(apartment_id, int(year))
 
 def apartment_ledger(
     apartment_id,
@@ -365,7 +399,7 @@ def force_majeure_adjustment(user, apartment_id, year, rows):
 
 def cashier_page(user):
     st.title("💳 Каса")
-    apts=fetch_all("SELECT id,apartment_number,property_type,adult_residents,annual_fro FROM apartments WHERE active ORDER BY apartment_number")
+    apts=fetch_all("SELECT id,apartment_number,property_type,adult_residents,annual_fro,monthly_entrance_fee FROM apartments WHERE active ORDER BY apartment_number")
     amap={f"{a['apartment_number']} · {a['property_type']}":a for a in apts}
     if not amap: st.warning("Няма добавени обекти."); return
     selected_name=st.selectbox("Апартамент / обект",list(amap)); apt=amap[selected_name]
@@ -1224,32 +1258,190 @@ def admin_panel(user):
         if add and num:
             try: execute("INSERT INTO apartments(apartment_number,property_type,floor,adult_residents,annual_fro) VALUES(%s,%s,%s,%s,%s)",(num,typ,floor,adults,fro)); rerun()
             except Exception: st.error("Обектът вече съществува.")
-        st.divider(); st.subheader("Корекция на лица и годишен ФРО")
-        all_apts=fetch_all("SELECT id,apartment_number,property_type,adult_residents,annual_fro FROM apartments WHERE active ORDER BY apartment_number")
-        edit_map={f"{x['apartment_number']} · {x['property_type']}":x for x in all_apts}
+        st.divider()
+        st.subheader("Корекция на хора, такса вход и годишен ФРО")
+
+        all_apts = fetch_all("""
+            SELECT
+                id,
+                apartment_number,
+                property_type,
+                adult_residents,
+                monthly_entrance_fee,
+                annual_fro
+            FROM apartments
+            WHERE active
+            ORDER BY apartment_number
+        """)
+
+        edit_map = {
+            f"{x['apartment_number']} · {x['property_type']}": x
+            for x in all_apts
+        }
+
         if edit_map:
-            selected_key=st.selectbox("Избери обект за корекция",list(edit_map),key="edit_apartment")
-            current=edit_map[selected_key]
+            selected_key = st.selectbox(
+                "Избери обект за корекция",
+                list(edit_map),
+                key="edit_apartment"
+            )
+            current = edit_map[selected_key]
+            current_adults = int(current["adult_residents"] or 0)
+            current_entrance_fee = (
+                Decimal(current["monthly_entrance_fee"])
+                if current.get("monthly_entrance_fee") is not None
+                else Decimal(current_adults) * Decimal("6.00")
+            )
+            current_fro = Decimal(current["annual_fro"] or 0)
+
+            st.caption(
+                f"Текущо: {current_adults} лица · "
+                f"Такса вход {current_entrance_fee:.2f} € / месец · "
+                f"ФРО {current_fro:.2f} € / година"
+            )
+
             with st.form("edit_apartment_form"):
-                ec1,ec2=st.columns(2)
-                new_adults=ec1.number_input("Лица над 18 г.",0,20,int(current["adult_residents"]),key="edit_adults")
-                new_fro=ec2.number_input("Годишен ФРО (€)",0.0,10000.0,float(current["annual_fro"]),step=0.01,key="edit_fro")
-                effective_year=st.selectbox("Преизчисли неплатените задължения за година",YEARS,index=YEARS.index(date.today().year) if date.today().year in YEARS else 0)
-                save_edit=st.form_submit_button("Запази корекцията",use_container_width=True)
+                ec1, ec2, ec3 = st.columns(3)
+                new_adults = ec1.number_input(
+                    "Лица над 18 г.",
+                    min_value=0,
+                    max_value=20,
+                    value=current_adults,
+                    step=1,
+                    key="edit_adults"
+                )
+                new_entrance_fee = ec2.number_input(
+                    "Месечна такса вход (€)",
+                    min_value=0.0,
+                    max_value=10000.0,
+                    value=float(current_entrance_fee),
+                    step=0.01,
+                    format="%.2f",
+                    key="edit_entrance_fee"
+                )
+                new_fro = ec3.number_input(
+                    "Годишен ФРО (€)",
+                    min_value=0.0,
+                    max_value=10000.0,
+                    value=float(current_fro),
+                    step=0.01,
+                    format="%.2f",
+                    key="edit_fro"
+                )
+                effective_year = st.selectbox(
+                    "Преизчисли неплатените задължения за година",
+                    YEARS,
+                    index=YEARS.index(date.today().year) if date.today().year in YEARS else 0
+                )
+                st.info(
+                    "Ще бъдат променени само напълно неплатените такси вход и ФРО "
+                    "за избраната година. Платените и частично платените позиции се запазват."
+                )
+                save_edit = st.form_submit_button(
+                    "Запази корекцията",
+                    use_container_width=True
+                )
+
             if save_edit:
-                execute("UPDATE apartments SET adult_residents=%s,annual_fro=%s WHERE id=%s",(new_adults,new_fro,current["id"]))
-                execute("INSERT INTO resident_history(apartment_id,adults,effective_from,reason,created_by) VALUES(%s,%s,%s,'Административна корекция',%s) ON CONFLICT(apartment_id,effective_from) DO UPDATE SET adults=EXCLUDED.adults,reason=EXCLUDED.reason,created_by=EXCLUDED.created_by",(current["id"],new_adults,date(int(effective_year),1,1),user["id"]))
-                # Update only unpaid obligations. Paid/partially paid records remain unchanged for audit safety.
-                execute("""UPDATE obligations o SET amount=%s WHERE o.apartment_id=%s AND o.year=%s AND o.fee_type='entrance'
-                    AND COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa JOIN payments p ON p.id=pa.payment_id WHERE pa.obligation_id=o.id AND p.status='confirmed'),0)=0""",(Decimal(new_adults)*Decimal('6'),current["id"],effective_year))
-                monthly=(Decimal(str(new_fro))/Decimal('12')).quantize(Decimal('0.01'))
-                for m in range(1,13):
-                    amount=Decimal(str(new_fro))-monthly*11 if m==12 else monthly
-                    execute("""UPDATE obligations o SET amount=%s WHERE o.apartment_id=%s AND o.year=%s AND o.month=%s AND o.fee_type='fro'
-                        AND COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa JOIN payments p ON p.id=pa.payment_id WHERE pa.obligation_id=o.id AND p.status='confirmed'),0)=0""",(amount,current["id"],effective_year,m))
-                audit(user["id"],"update_apartment_financial_settings","apartment",current["id"],f"adults={new_adults};fro={new_fro};year={effective_year}")
-                st.success("Корекцията е записана. Обновени са само неплатените задължения."); rerun()
-        st.dataframe(fetch_all("SELECT apartment_number AS обект,property_type AS тип,adult_residents AS лица,annual_fro AS ФРО,status AS статус FROM apartments ORDER BY apartment_number"),use_container_width=True,hide_index=True)
+                entrance_fee = Decimal(str(new_entrance_fee)).quantize(Decimal("0.01"))
+                annual_fro = Decimal(str(new_fro)).quantize(Decimal("0.01"))
+
+                execute("""
+                    UPDATE apartments
+                    SET adult_residents = %s,
+                        monthly_entrance_fee = %s,
+                        annual_fro = %s
+                    WHERE id = %s
+                """, (new_adults, entrance_fee, annual_fro, current["id"]))
+
+                execute("""
+                    INSERT INTO resident_history(
+                        apartment_id, adults, effective_from, reason, created_by
+                    )
+                    VALUES(%s, %s, %s, 'Административна корекция', %s)
+                    ON CONFLICT(apartment_id, effective_from)
+                    DO UPDATE SET
+                        adults = EXCLUDED.adults,
+                        reason = EXCLUDED.reason,
+                        created_by = EXCLUDED.created_by
+                """, (
+                    current["id"],
+                    new_adults,
+                    date(int(effective_year), 1, 1),
+                    user["id"]
+                ))
+
+                execute("""
+                    UPDATE obligations o
+                    SET amount = %s
+                    WHERE o.apartment_id = %s
+                      AND o.year = %s
+                      AND o.fee_type = 'entrance'
+                      AND COALESCE(
+                            (
+                                SELECT SUM(pa.amount)
+                                FROM payment_allocations pa
+                                JOIN payments p ON p.id = pa.payment_id
+                                WHERE pa.obligation_id = o.id
+                                  AND p.status = 'confirmed'
+                            ),
+                            0
+                          ) = 0
+                """, (entrance_fee, current["id"], effective_year))
+
+                monthly_fro = (annual_fro / Decimal("12")).quantize(Decimal("0.01"))
+                for month in range(1, 13):
+                    fro_amount = annual_fro - monthly_fro * 11 if month == 12 else monthly_fro
+                    execute("""
+                        UPDATE obligations o
+                        SET amount = %s
+                        WHERE o.apartment_id = %s
+                          AND o.year = %s
+                          AND o.month = %s
+                          AND o.fee_type = 'fro'
+                          AND COALESCE(
+                                (
+                                    SELECT SUM(pa.amount)
+                                    FROM payment_allocations pa
+                                    JOIN payments p ON p.id = pa.payment_id
+                                    WHERE pa.obligation_id = o.id
+                                      AND p.status = 'confirmed'
+                                ),
+                                0
+                              ) = 0
+                    """, (fro_amount, current["id"], effective_year, month))
+
+                audit(
+                    user["id"],
+                    "update_apartment_financial_settings",
+                    "apartment",
+                    current["id"],
+                    f"adults={new_adults};entrance_fee={entrance_fee};fro={annual_fro};year={effective_year}"
+                )
+                st.success(
+                    "Корекцията е записана. Обновени са хората, месечната такса вход "
+                    "и годишният ФРО. Платените позиции са запазени."
+                )
+                rerun()
+
+        st.dataframe(
+            fetch_all("""
+                SELECT
+                    apartment_number AS обект,
+                    property_type AS тип,
+                    adult_residents AS лица,
+                    COALESCE(
+                        monthly_entrance_fee,
+                        adult_residents * 6
+                    ) AS "Месечна такса",
+                    annual_fro AS "Годишен ФРО",
+                    status AS статус
+                FROM apartments
+                ORDER BY apartment_number
+            """),
+            use_container_width=True,
+            hide_index=True
+        )
     if admin_section == "Регистрации":
         regs=fetch_all("SELECT u.id,u.first_name,u.last_name,u.email,a.apartment_number FROM users u LEFT JOIN apartments a ON a.id=u.apartment_id WHERE u.account_status='pending'")
         for x in regs:
