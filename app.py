@@ -1737,10 +1737,22 @@ if user["role"] == "neighbor":
             logout_user()
             st.session_state.pop("neighbor_page", None)
             rerun()
-    bell_col, _ = st.columns([1, 11])
+    st.markdown(
+        """
+        <div style="
+            height: 24px;
+        "></div>
+        """,
+        unsafe_allow_html=True
+    )
+    
+    _, bell_col = st.columns([11, 1])
+    
     with bell_col:
         notification_bell(user, "neighbor")
+    
     neighbor_main_navigation()
+    
     page = st.session_state.neighbor_page
 else:
     with st.sidebar:
