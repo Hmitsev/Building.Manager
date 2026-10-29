@@ -1311,7 +1311,7 @@ def admin_panel(user):
                     max_value=20,
                     value=current_adults,
                     step=1,
-                    key="edit_adults"
+                    key=f"edit_adults_{current['id']}"
                 )
                 new_entrance_fee = ec2.number_input(
                     "Месечна такса вход (€)",
