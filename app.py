@@ -1229,14 +1229,14 @@ def expenses_page(user):
         )
 
     st.divider()    
-if user["role"] in ("manager","cashier"):
-    cats=[x["category"] for x in fetch_all("SELECT DISTINCT category FROM expenses ORDER BY category")]
-    defaults=["Електроенергия","Асансьор","Почистване","Интернет","Банкови такси","Домоуправител","Касиер","Ремонт","Консумативи","Гараж","Други"]
-    with st.form("expense"):
-        d=st.date_input("Дата",date.today()); cat=st.selectbox("Категория",list(dict.fromkeys(defaults+cats))); amount=st.number_input("Сума (€)",0.0,100000.0,0.0,.01); source=st.radio("Начин",["В брой","По банка"],horizontal=True); desc=st.text_area("Описание"); save=st.form_submit_button("Добави разход")
-    if save and amount>0: execute("INSERT INTO expenses(expense_date,category,amount,source,description,created_by) VALUES(%s,%s,%s,%s,%s,%s)",(d,cat,amount,"cash" if source=="В брой" else "bank",desc,user["id"])); rerun()
-rows=fetch_all("SELECT expense_date AS дата,category AS категория,amount AS сума,CASE source WHEN 'cash' THEN 'В брой' ELSE 'По банка' END AS начин,description AS описание FROM expenses ORDER BY expense_date DESC,id DESC")
-st.dataframe(rows,use_container_width=True,hide_index=True)
+    if user["role"] in ("manager","cashier"):
+        cats=[x["category"] for x in fetch_all("SELECT DISTINCT category FROM expenses ORDER BY category")]
+        defaults=["Електроенергия","Асансьор","Почистване","Интернет","Банкови такси","Домоуправител","Касиер","Ремонт","Консумативи","Гараж","Други"]
+        with st.form("expense"):
+            d=st.date_input("Дата",date.today()); cat=st.selectbox("Категория",list(dict.fromkeys(defaults+cats))); amount=st.number_input("Сума (€)",0.0,100000.0,0.0,.01); source=st.radio("Начин",["В брой","По банка"],horizontal=True); desc=st.text_area("Описание"); save=st.form_submit_button("Добави разход")
+        if save and amount>0: execute("INSERT INTO expenses(expense_date,category,amount,source,description,created_by) VALUES(%s,%s,%s,%s,%s,%s)",(d,cat,amount,"cash" if source=="В брой" else "bank",desc,user["id"])); rerun()
+    rows=fetch_all("SELECT expense_date AS дата,category AS категория,amount AS сума,CASE source WHEN 'cash' THEN 'В брой' ELSE 'По банка' END AS начин,description AS описание FROM expenses ORDER BY expense_date DESC,id DESC")
+    st.dataframe(rows,use_container_width=True,hide_index=True)
 def _set_neighbor_page(page_name):
     st.session_state.neighbor_page = page_name
 
