@@ -809,82 +809,424 @@ def report_page(user):
         -amount AS сума,'EUR' AS валута,CASE source WHEN 'cash' THEN 'В брой' ELSE 'По банка' END AS начин,'Разход' AS статус
         FROM expenses WHERE created_at>%s""",(base["applied_at"],))
     flow=[dict(x) for x in payments]+[dict(x) for x in expenses]; flow.sort(key=lambda x:x["дата"],reverse=True)
-    st.dataframe(flow,use_container_width=True,hide_index=True)
-    if flow:
-        export_df=pd.DataFrame(flow).copy()
+        st.dataframe(
+            flow,
+            use_container_width=True,
+            hide_index=True
+        )
+    
+        # ==================================================
+        # НЕПЛАТЕНИ ЗАДЪЛЖЕНИЯ
+        # ==================================================
+    
+        unpaid_rows = fetch_all("""
+            SELECT
+                a.apartment_number AS "Обект",
+                o.fee_type AS "_fee_type",
+                o.year AS "Година",
+                o.month AS "_month",
+                o.amount AS "Начислено",
+                COALESCE(
+                    SUM(
+                        CASE
+                            WHEN p.status = 'confirmed'
+                            THEN pa.amount
+                            ELSE 0
+                        END
+                    ),
+                    0
+                ) AS "Платено",
+                o.source_currency AS "Валута",
+                o.custom_status AS "_custom_status"
+            FROM obligations o
+    
+            JOIN apartments a
+                ON a.id = o.apartment_id
+    
+            LEFT JOIN payment_allocations pa
+                ON pa.obligation_id = o.id
+    
+            LEFT JOIN payments p
+                ON p.id = pa.payment_id
+    
+            WHERE a.active = TRUE
+    
+            GROUP BY
+                o.id,
+                a.apartment_number,
+                o.fee_type,
+                o.year,
+                o.month,
+                o.amount,
+                o.source_currency,
+                o.custom_status
+    
+            HAVING
+                o.amount -
+                COALESCE(
+                    SUM(
+                        CASE
+                            WHEN p.status = 'confirmed'
+                            THEN pa.amount
+                            ELSE 0
+                        END
+                    ),
+                    0
+                ) > 0
+    
+            ORDER BY
+                CASE
+                    WHEN a.apartment_number ~ '^[0-9]+$'
+                    THEN a.apartment_number::INTEGER
+                    ELSE 999999
+                END,
+                a.apartment_number,
+                o.year,
+                o.month,
+                o.fee_type
+        """)
+    
+        unpaid_detail = []
+    
+        for row in unpaid_rows:
+    
+            fee_type = row["_fee_type"]
+    
+            fee_name = {
+                "entrance": "Такса вход",
+                "fro": "ФРО",
+                "old_debt": "Старо задължение",
+            }.get(
+                fee_type,
+                fee_type
+            )
+    
+            month_number = int(row["_month"] or 0)
+    
+            month_name = (
+                MONTHS.get(month_number, "Еднократно")
+                if month_number
+                else "Еднократно"
+            )
+    
+            charged = Decimal(row["Начислено"] or 0)
+            paid = Decimal(row["Платено"] or 0)
+    
+            remaining = max(
+                Decimal("0"),
+                charged - paid
+            )
+    
+            if paid > 0:
+                status = "🟠 Частично"
+            else:
+                status = "🔴 Неплатено"
+    
+            unpaid_detail.append({
+                "Обект": row["Обект"],
+                "Вид": fee_name,
+                "Месец": month_name,
+                "Година": row["Година"],
+                "Начислено": float(charged),
+                "Платено": float(paid),
+                "Остатък": float(remaining),
+                "Валута": row["Валута"],
+                "Статус": status,
+            })
+    
+        unpaid_df = pd.DataFrame(unpaid_detail)
+    
+        # ==================================================
+        # ОБОБЩЕНИЕ ПО АПАРТАМЕНТ
+        # ==================================================
+    
+        st.divider()
+        st.subheader("🔴 Неплатени задължения")
+    
+        if unpaid_df.empty:
+    
+            st.success(
+                "В момента няма неплатени задължения."
+            )
+    
+            unpaid_summary = pd.DataFrame()
+    
+        else:
+    
+            summary_rows = []
+    
+            for (obj, currency), group in unpaid_df.groupby(
+                ["Обект", "Валута"],
+                dropna=False
+            ):
+    
+                entrance_due = group.loc[
+                    group["Вид"] == "Такса вход",
+                    "Остатък"
+                ].sum()
+    
+                fro_due = group.loc[
+                    group["Вид"] == "ФРО",
+                    "Остатък"
+                ].sum()
+    
+                old_due = group.loc[
+                    group["Вид"] == "Старо задължение",
+                    "Остатък"
+                ].sum()
+    
+                total_due = group["Остатък"].sum()
+    
+                summary_rows.append({
+                    "Обект": obj,
+                    "Такса вход": round(
+                        float(entrance_due),
+                        2
+                    ),
+                    "ФРО": round(
+                        float(fro_due),
+                        2
+                    ),
+                    "Стари задължения": round(
+                        float(old_due),
+                        2
+                    ),
+                    "Общо неплатено": round(
+                        float(total_due),
+                        2
+                    ),
+                    "Валута": currency,
+                })
+    
+            unpaid_summary = pd.DataFrame(
+                summary_rows
+            )
+    
+            # Най-големите задължения най-отгоре
+            unpaid_summary = unpaid_summary.sort_values(
+                by="Общо неплатено",
+                ascending=False
+            )
+    
+            c1, c2 = st.columns(2)
+    
+            c1.metric(
+                "Обекти със задължения",
+                unpaid_summary["Обект"].nunique()
+            )
+    
+            c2.metric(
+                "Неплатени позиции",
+                len(unpaid_df)
+            )
+    
+            st.dataframe(
+                unpaid_summary,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Такса вход":
+                        st.column_config.NumberColumn(
+                            format="%.2f"
+                        ),
+                    "ФРО":
+                        st.column_config.NumberColumn(
+                            format="%.2f"
+                        ),
+                    "Стари задължения":
+                        st.column_config.NumberColumn(
+                            format="%.2f"
+                        ),
+                    "Общо неплатено":
+                        st.column_config.NumberColumn(
+                            format="%.2f"
+                        ),
+                }
+            )
+    
+            with st.expander(
+                "Покажи подробно по месеци"
+            ):
+                st.dataframe(
+                    unpaid_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Начислено":
+                            st.column_config.NumberColumn(
+                                format="%.2f"
+                            ),
+                        "Платено":
+                            st.column_config.NumberColumn(
+                                format="%.2f"
+                            ),
+                        "Остатък":
+                            st.column_config.NumberColumn(
+                                format="%.2f"
+                            ),
+                    }
+                )
+    
+        # ==================================================
+        # EXCEL EXPORT
+        # ==================================================
+    
+        export_df = pd.DataFrame(flow).copy()
+    
         if "дата" in export_df.columns:
-            export_df["дата"]=pd.to_datetime(export_df["дата"],errors="coerce",utc=True).dt.tz_localize(None)
-        out=io.BytesIO()
-        export_df.to_excel(out,index=False,engine="openpyxl")
-        st.download_button("Изтегли отчет",data=out.getvalue(),file_name=f"building_report_{date.today()}.xlsx",mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",use_container_width=True)
-
-def expenses_page(user):
-    st.title("Разходи")
-    # Наличност каса за съседите
-
-    base = fetch_one("""
-        SELECT *
-        FROM balance_baseline
-        ORDER BY applied_at DESC
-        LIMIT 1
-    """)
-
-    if base:
-
-        cash_in = fetch_one("""
-            SELECT COALESCE(SUM(amount),0) total
-            FROM payments
-            WHERE status='confirmed'
-              AND payment_method='cash'
-              AND source_currency='EUR'
-              AND created_at > %s
-        """,(base["applied_at"],))["total"]
-
-        bank_in = fetch_one("""
-            SELECT COALESCE(SUM(amount),0) total
-            FROM payments
-            WHERE status='confirmed'
-              AND payment_method IN ('bank','card_softpos')
-              AND source_currency='EUR'
-              AND created_at > %s
-        """,(base["applied_at"],))["total"]
-
-        cash_out = fetch_one("""
-            SELECT COALESCE(SUM(amount),0) total
-            FROM expenses
-            WHERE source='cash'
-              AND created_at > %s
-        """,(base["applied_at"],))["total"]
-
-        bank_out = fetch_one("""
-            SELECT COALESCE(SUM(amount),0) total
-            FROM expenses
-            WHERE source='bank'
-              AND created_at > %s
-        """,(base["applied_at"],))["total"]
-
-        cash_balance = (
-            Decimal(base["cash_amount"])
-            + Decimal(cash_in)
-            - Decimal(cash_out)
+            export_df["дата"] = pd.to_datetime(
+                export_df["дата"],
+                errors="coerce",
+                utc=True
+            ).dt.tz_localize(None)
+    
+        out = io.BytesIO()
+    
+        with pd.ExcelWriter(
+            out,
+            engine="openpyxl"
+        ) as writer:
+    
+            # Sheet 1 - движения
+            export_df.to_excel(
+                writer,
+                sheet_name="Движения",
+                index=False
+            )
+    
+            # Sheet 2 - обобщено
+            if not unpaid_summary.empty:
+                unpaid_summary.to_excel(
+                    writer,
+                    sheet_name="Неплатени - Общо",
+                    index=False
+                )
+    
+            # Sheet 3 - подробно
+            if not unpaid_df.empty:
+                unpaid_df.to_excel(
+                    writer,
+                    sheet_name="Неплатени - Подробно",
+                    index=False
+                )
+    
+            # По-удобен визуален Excel
+            for sheet_name, worksheet in writer.sheets.items():
+    
+                worksheet.freeze_panes = "A2"
+                worksheet.auto_filter.ref = (
+                    worksheet.dimensions
+                )
+    
+                for cell in worksheet[1]:
+                    cell.font = cell.font.copy(
+                        bold=True
+                    )
+    
+                for column_cells in worksheet.columns:
+    
+                    max_length = 0
+                    column_letter = (
+                        column_cells[0].column_letter
+                    )
+    
+                    for cell in column_cells:
+    
+                        if cell.value is not None:
+                            max_length = max(
+                                max_length,
+                                len(str(cell.value))
+                            )
+    
+                    worksheet.column_dimensions[
+                        column_letter
+                    ].width = min(
+                        max_length + 3,
+                        35
+                    )
+    
+        st.download_button(
+            "📥 Изтегли пълен отчет",
+            data=out.getvalue(),
+            file_name=(
+                f"building_report_"
+                f"{date.today()}.xlsx"
+            ),
+            mime=(
+                "application/"
+                "vnd.openxmlformats-officedocument."
+                "spreadsheetml.sheet"
+            ),
+            use_container_width=True
         )
-
-        bank_balance = (
-            Decimal(base["bank_amount"])
-            + Decimal(bank_in)
-            - Decimal(bank_out)
-        )
-
-        total_balance = cash_balance + bank_balance
-
-        st.metric(
-            "💶 Наличност Каса",
-            fmt(total_balance)
-        )
-
-        st.caption(
-            "Актуална наличност на етажната собственост."
-        )
+    
+    def expenses_page(user):
+        st.title("Разходи")
+        # Наличност каса за съседите
+    
+        base = fetch_one("""
+            SELECT *
+            FROM balance_baseline
+            ORDER BY applied_at DESC
+            LIMIT 1
+        """)
+    
+        if base:
+    
+            cash_in = fetch_one("""
+                SELECT COALESCE(SUM(amount),0) total
+                FROM payments
+                WHERE status='confirmed'
+                  AND payment_method='cash'
+                  AND source_currency='EUR'
+                  AND created_at > %s
+            """,(base["applied_at"],))["total"]
+    
+            bank_in = fetch_one("""
+                SELECT COALESCE(SUM(amount),0) total
+                FROM payments
+                WHERE status='confirmed'
+                  AND payment_method IN ('bank','card_softpos')
+                  AND source_currency='EUR'
+                  AND created_at > %s
+            """,(base["applied_at"],))["total"]
+    
+            cash_out = fetch_one("""
+                SELECT COALESCE(SUM(amount),0) total
+                FROM expenses
+                WHERE source='cash'
+                  AND created_at > %s
+            """,(base["applied_at"],))["total"]
+    
+            bank_out = fetch_one("""
+                SELECT COALESCE(SUM(amount),0) total
+                FROM expenses
+                WHERE source='bank'
+                  AND created_at > %s
+            """,(base["applied_at"],))["total"]
+    
+            cash_balance = (
+                Decimal(base["cash_amount"])
+                + Decimal(cash_in)
+                - Decimal(cash_out)
+            )
+    
+            bank_balance = (
+                Decimal(base["bank_amount"])
+                + Decimal(bank_in)
+                - Decimal(bank_out)
+            )
+    
+            total_balance = cash_balance + bank_balance
+    
+            st.metric(
+                "💶 Наличност Каса",
+                fmt(total_balance)
+            )
+    
+            st.caption(
+                "Актуална наличност на етажната собственост."
+            )
 
         st.divider()    
     if user["role"] in ("manager","cashier"):
