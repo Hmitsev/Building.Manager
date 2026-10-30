@@ -424,25 +424,264 @@ def apartment_ledger(
         rows = payment_rows(apartment_id, year)
 
     data = []
+
     for r in rows:
-        paid=Decimal(r["paid"]); left=max(Decimal("0"),Decimal(r["amount"])-paid)
+        paid = Decimal(r["paid"])
+        left = max(
+            Decimal("0"),
+            Decimal(r["amount"]) - paid
+        )
+
         custom_status = str(r.get("custom_status") or "")
-        if custom_status == "force_majeure": display_status = "🔵 Друг / форсмажор"
-        elif left <= 0: display_status = "🟢 Платено"
-        elif paid > 0: display_status = "🟠 Частично"
-        else: display_status = "🔴 Неплатено"
-        data.append({"Плати":False,"Вид":kind_bg(r["fee_type"]),"Месец":MONTHS.get(r["month"],"Еднократно"),"Година":r["year"],"Валута":r.get("source_currency") or ("BGN" if int(r["year"])<2026 else "EUR"),"Начислено":float(r["amount"]),"Платено":float(paid),"Остатък":float(left),"Статус":display_status,"_id":r["id"]})
-    df=pd.DataFrame(data)
-    if df.empty: st.info("Няма задължения."); return [],Decimal("0")
-    base=df.drop(columns=["_id"])
+
+        if custom_status == "force_majeure":
+            display_status = "🔵 Друг / форсмажор"
+        elif left <= 0:
+            display_status = "🟢 Платено"
+        elif paid > 0:
+            display_status = "🟠 Частично"
+        else:
+            display_status = "🔴 Неплатено"
+
+        data.append({
+            "Плати": False,
+            "Вид": kind_bg(r["fee_type"]),
+            "Месец": MONTHS.get(
+                r["month"],
+                "Еднократно"
+            ),
+            "Година": r["year"],
+            "Валута": (
+                r.get("source_currency")
+                or (
+                    "BGN"
+                    if int(r["year"]) < 2026
+                    else "EUR"
+                )
+            ),
+            "Начислено": float(r["amount"]),
+            "Платено": float(paid),
+            "Остатък": float(left),
+            "Статус": display_status,
+            "_id": r["id"],
+            "_fee_type": r["fee_type"],
+        })
+
+    df = pd.DataFrame(data)
+
+    if df.empty:
+        st.info("Няма задължения.")
+        return [], Decimal("0")
+
+    column_config = {
+        "Плати": st.column_config.CheckboxColumn(
+            "Плати"
+        ),
+        "Начислено": st.column_config.NumberColumn(
+            format="%.2f"
+        ),
+        "Платено": st.column_config.NumberColumn(
+            format="%.2f"
+        ),
+        "Остатък": st.column_config.NumberColumn(
+            format="%.2f"
+        ),
+    }
+
+    disabled_columns = [
+        "Вид",
+        "Месец",
+        "Година",
+        "Валута",
+        "Начислено",
+        "Платено",
+        "Остатък",
+        "Статус",
+    ]
+
+    selected = []
+
+    def render_ledger_group(
+        group_df,
+        editor_key,
+        group_title=None
+    ):
+        if group_df.empty:
+            return
+
+        if group_title:
+            st.markdown(
+                f"""
+                <div style="
+                    margin: 10px 0 6px 0;
+                    color: #93c5fd;
+                    font-size: 0.80rem;
+                    font-weight: 800;
+                    letter-spacing: 0.06em;
+                    text-transform: uppercase;
+                ">
+                    {group_title}
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+        visible_df = group_df.drop(
+            columns=["_id", "_fee_type"]
+        ).reset_index(drop=True)
+
+        if editable:
+            edited_df = st.data_editor(
+                visible_df,
+                use_container_width=True,
+                hide_index=True,
+                disabled=disabled_columns,
+                column_config=column_config,
+                key=editor_key,
+            )
+
+            source_df = group_df.reset_index(drop=True)
+
+            for index, edited_row in edited_df.iterrows():
+                if (
+                    bool(edited_row["Плати"])
+                    and Decimal(
+                        str(edited_row["Остатък"])
+                    ) > 0
+                ):
+                    selected.append({
+                        "id": int(
+                            source_df.iloc[index]["_id"]
+                        ),
+                        "amount": Decimal(
+                            str(edited_row["Остатък"])
+                        ),
+                        "label": (
+                            f"{edited_row['Вид']} "
+                            f"{edited_row['Месец']} "
+                            f"{edited_row['Година']}"
+                        ),
+                    })
+
+        else:
+            visible_df = visible_df.drop(
+                columns=["Плати"]
+            )
+
+            st.dataframe(
+                visible_df,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    # Старите задължения, ако има такива
+    old_debt_df = df[
+        df["_fee_type"] == "old_debt"
+    ].copy()
+
+    # Месечна такса вход
+    entrance_df = df[
+        df["_fee_type"] == "entrance"
+    ].copy()
+
+    # Фонд ремонт и обновяване
+    fro_df = df[
+        df["_fee_type"] == "fro"
+    ].copy()
+
+    # Други бъдещи видове задължения
+    known_types = [
+        "old_debt",
+        "entrance",
+        "fro",
+    ]
+
+    other_df = df[
+        ~df["_fee_type"].isin(known_types)
+    ].copy()
+
+    if not old_debt_df.empty:
+        render_ledger_group(
+            old_debt_df,
+            f"{key}_old_debt",
+            "Стари задължения",
+        )
+
+    if not entrance_df.empty:
+        render_ledger_group(
+            entrance_df,
+            f"{key}_entrance",
+            "Такса вход",
+        )
+
+    # Цветен разделител непосредствено преди ФРО
+    if not entrance_df.empty and not fro_df.empty:
+        st.markdown(
+            """
+            <div style="
+                width: 100%;
+                height: 3px;
+                margin: 12px 0 10px 0;
+                border-radius: 999px;
+                background: linear-gradient(
+                    90deg,
+                    #dc2626 0%,
+                    #ef4444 45%,
+                    rgba(239,68,68,0.20) 100%
+                );
+                box-shadow: 0 0 10px
+                    rgba(239,68,68,0.28);
+            "></div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    if not fro_df.empty:
+        render_ledger_group(
+            fro_df,
+            f"{key}_fro",
+            "ФРО",
+        )
+
+    if not other_df.empty:
+        st.markdown(
+            """
+            <div style="
+                width: 100%;
+                height: 1px;
+                margin: 12px 0 10px 0;
+                background: rgba(148,163,184,0.30);
+            "></div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        render_ledger_group(
+            other_df,
+            f"{key}_other",
+            "Други задължения",
+        )
+
     if editable:
-        view=st.data_editor(base,use_container_width=True,hide_index=True,disabled=["Вид","Месец","Година","Валута","Начислено","Платено","Остатък","Статус"],column_config={"Плати":st.column_config.CheckboxColumn("Плати"),"Начислено":st.column_config.NumberColumn(format="%.2f"),"Платено":st.column_config.NumberColumn(format="%.2f"),"Остатък":st.column_config.NumberColumn(format="%.2f")},key=key)
-    else:
-        view=base.drop(columns=["Плати"]); st.dataframe(view,use_container_width=True,hide_index=True); return [],sum(Decimal(str(x)) for x in df["Остатък"])
-    selected=[]
-    for i,row in view.iterrows():
-        if bool(row["Плати"]) and Decimal(str(row["Остатък"]))>0: selected.append({"id":int(df.iloc[i]["_id"]),"amount":Decimal(str(row["Остатък"])),"label":f"{row['Вид']} {row['Месец']} {row['Година']}"})
-    return selected,sum((x["amount"] for x in selected),Decimal("0"))
+        total_selected = sum(
+            (
+                item["amount"]
+                for item in selected
+            ),
+            Decimal("0")
+        )
+
+        return selected, total_selected
+
+    total_remaining = sum(
+        (
+            Decimal(str(value))
+            for value in df["Остатък"]
+        ),
+        Decimal("0")
+    )
+
+    return [], total_remaining
 
 
 def selected_currency_for_year(year):
