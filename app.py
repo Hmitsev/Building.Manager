@@ -552,7 +552,12 @@ def report_page(user):
     bank_in=fetch_one("SELECT COALESCE(SUM(amount),0) total FROM payments WHERE status='confirmed' AND payment_method IN ('bank','card_softpos') AND source_currency='EUR' AND created_at>%s",(base["applied_at"],))["total"]
     cash_out=fetch_one("SELECT COALESCE(SUM(amount),0) total FROM expenses WHERE source='cash' AND created_at>%s",(base["applied_at"],))["total"]
     bank_out=fetch_one("SELECT COALESCE(SUM(amount),0) total FROM expenses WHERE source='bank' AND created_at>%s",(base["applied_at"],))["total"]
-    cash_balance=Decimal(base["cash_amount"])+Decimal(cash_in)-Decimal(cash_out)
+    cash_balance = (
+        Decimal(base["cash_amount"])
+        + Decimal(cash_in)
+        - Decimal(cash_out)
+        - Decimal("553.00")
+    )
     bank_balance=Decimal(base["bank_amount"])+Decimal(bank_in)-Decimal(bank_out)
     c1,c2,c3=st.columns(3); c1.metric("Каса в брой",fmt(cash_balance)); c2.metric("Каса банка",fmt(bank_balance)); c3.metric("Всичко",fmt(cash_balance+bank_balance))
     st.caption(f"Начално салдо: в брой {fmt(base['cash_amount'])}, банка {fmt(base['bank_amount'])}. След него отчетът добавя новите постъпления и изважда новите разходи.")
