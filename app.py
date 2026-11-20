@@ -270,7 +270,7 @@ def notification_bell(user, audience):
     """, (audience,user["id"]))["count"]
 
     label = f"🔔 {unread}" if unread else "🔔"
-    with st.popover(label):
+    with st.popover(label, use_container_width=True):
         heading = "Административни известия" if audience == "admin" else "Известия"
         st.markdown(f"### {heading}")
         notices = fetch_all("""
@@ -2354,11 +2354,20 @@ else:
         if "staff_page" not in st.session_state or st.session_state.staff_page not in pages:
             st.session_state.staff_page = pages[0]
         page = st.radio("Навигация", pages, key="staff_page")
-        if user["role"] == "manager":
-            notification_bell(user, "admin")
         if st.button("Изход", use_container_width=True, key="staff_logout"):
             logout_user()
             rerun()
+
+if user["role"] == "manager":
+    st.markdown(
+        """
+        <div style="height: 8px;"></div>
+        """,
+        unsafe_allow_html=True
+    )
+    _, admin_bell_col = st.columns([11, 1])
+    with admin_bell_col:
+        notification_bell(user, "admin")
 
 if page=="Каса": cashier_page(user)
 elif page=="Отчет": report_page(user)
